@@ -325,19 +325,21 @@ while [ "$PROVISIONING_COMPLETE" -eq 0 ]; do
             if [ "$FILESYSTEM" = "btrfs" ]; then mkfs.btrfs -f "$ARCH_ROOT"; else mkfs.ext4 -O ^orphan_file,^metadata_csum_seed -F "$ARCH_ROOT"; fi
             mount "$ARCH_ROOT" "$TARGET"
             
-            if [ -d "/sys/firmware/efi" ]; then
-                if [ "$NON_INTERACTIVE" != "1" ]; then
-                    if [ -z "$ARCH_EFI" ]; then
-                        while true; do
-                            read -r -p "Enter existing EFI partition path (e.g., /dev/sda1): " ARCH_EFI
-                            if [ -b "$ARCH_EFI" ] && [ "$ARCH_EFI" != "$TARGET_DRIVE" ]; then break; fi
-                        done
-                    fi
+            # BUG FIX: Allow Legacy BIOS GUI to properly mount a replacement boot partition
+            if [ -n "$GUI_EFI_PART" ] && [ -b "$GUI_EFI_PART" ]; then
+                if [ -d "/sys/firmware/efi" ]; then
+                    echo "[INFO] Safely mounting $GUI_EFI_PART to $EFI_DIR (Preserving existing bootloaders)..."
+                    mkdir -p "$TARGET$EFI_DIR"
+                    mount -t vfat "$GUI_EFI_PART" "$TARGET$EFI_DIR"
                 else
-                    ARCH_EFI="${GUI_EFI_PART:-${TARGET_DRIVE}${PART_PREFIX}1}"
+                    echo "[INFO] Legacy BIOS: Mounting Boot Partition..."
+                    mkdir -p "$TARGET/boot"
+                    mount -t vfat "$GUI_EFI_PART" "$TARGET/boot" || mount "$GUI_EFI_PART" "$TARGET/boot"
+                    PART_NUM=$(echo "$GUI_EFI_PART" | grep -o '[0-9]*$')
+                    parted -s "$TARGET_DRIVE" set "$PART_NUM" boot on || true
                 fi
-                mkdir -p "$TARGET$EFI_DIR"
-                mount -t vfat "$ARCH_EFI" "$TARGET$EFI_DIR"
+            else
+                mkdir -p "$TARGET/boot"
             fi
             GRUB_OS_PROBER="false"
             PROVISIONING_COMPLETE=1
@@ -439,14 +441,20 @@ while [ "$PROVISIONING_COMPLETE" -eq 0 ]; do
                     exit 1
                 fi
                 
-                if [ -d "/sys/firmware/efi" ]; then
-                    if [ -n "$GUI_EFI_PART" ] && [ -b "$GUI_EFI_PART" ]; then
+                # BUG FIX: Legacy BIOS GUI EFI/Boot mapping 
+                if [ -n "$GUI_EFI_PART" ] && [ -b "$GUI_EFI_PART" ]; then
+                    if [ -d "/sys/firmware/efi" ]; then
                         echo "[INFO] Safely mounting $GUI_EFI_PART to $EFI_DIR (Preserving existing bootloaders)..."
                         mkdir -p "$TARGET$EFI_DIR"
                         mount -t vfat "$GUI_EFI_PART" "$TARGET$EFI_DIR"
                     else
-                        echo "[ERROR] UEFI system requires an EFI partition, but GUI did not map one."
-                        exit 1
+                        echo "[INFO] Legacy BIOS: Mounting Boot Partition..."
+                        mkdir -p "$TARGET/boot"
+                        mount -t vfat "$GUI_EFI_PART" "$TARGET/boot" || mount "$GUI_EFI_PART" "$TARGET/boot"
+                        
+                        # Lenovo strictly requires the active flag!
+                        PART_NUM=$(echo "$GUI_EFI_PART" | grep -o '[0-9]*$')
+                        parted -s "$TARGET_DRIVE" set "$PART_NUM" boot on || true
                     fi
                 else
                     mkdir -p "$TARGET/boot"
