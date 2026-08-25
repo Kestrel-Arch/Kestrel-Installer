@@ -212,7 +212,10 @@ update_status "PROGRESS: Preparing Storage and Partitioning..."
 
 if [ ! -d "$ISO_CACHE" ]; then pacman -Sy --noconfirm ntfs-3g parted gparted >/dev/null 2>&1 || true; fi
 
+# BUG FIX: Force FILESYSTEM to strictly lowercase and remove any phantom spaces
 FILESYSTEM="${FILESYSTEM:-ext4}"
+FILESYSTEM=$(echo "$FILESYSTEM" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+
 PROVISIONING_COMPLETE=0
 RESET_STRATEGY=0
 
@@ -394,6 +397,7 @@ while [ "$PROVISIONING_COMPLETE" -eq 0 ]; do
                         if [[ "$FORMAT_ROOT" =~ ^[Yy]$ ]]; then
                             read -r -p "Select Filesystem (ext4/btrfs) [default: ext4]: " ROOT_FS
                             ROOT_FS=${ROOT_FS:-ext4}
+                            ROOT_FS=$(echo "$ROOT_FS" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
                             wipefs -a "$ARCH_ROOT" &>/dev/null || true
                             if [ "$ROOT_FS" = "btrfs" ]; then mkfs.btrfs -f "$ARCH_ROOT"; else mkfs.ext4 -O ^orphan_file,^metadata_csum_seed -F "$ARCH_ROOT"; fi
                         fi
