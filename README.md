@@ -184,5 +184,5 @@ Kestrel Arch is dual-licensed:
 2. **Commercial / Proprietary Licensing:** 
    If you wish to use Kestrel Arch, or any modified version of it, in a commercial product, enterprise environment, or closed-source application without complying with the copyleft terms of the AGPL, you **must** purchase a Commercial License. 
    
-   *For commercial licensing inquiries, contact:* **eadxmz@gmail.com**.
+   *For commercial licensing inquiries, contact:* **kestrel.arch.dev@gmail.com**.
 
