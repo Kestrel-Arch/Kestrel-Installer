@@ -22,6 +22,9 @@ fn format_size(bytes: u64) -> String {
 fn scan_partitions(disk_path: &str) -> (Vec<PartitionData>, Vec<SharedString>) {
     let mut partitions = Vec::new();
     let mut available_dropdown = Vec::new();
+    
+    // UX FIX: Inject a safe placeholder at the very top of the dropdown lists!
+    available_dropdown.push("Select Partition...".into());
 
     let disk_output = Command::new("lsblk").arg("-b").arg("-n").arg("-d").arg("-o").arg("SIZE").arg(disk_path).output();
     let total_bytes: f64 = if let Ok(out) = disk_output {
@@ -303,8 +306,13 @@ fn main() -> Result<(), slint::PlatformError> {
         
         let fs_str = filesystem.as_str().to_string();
         let replace_str = replace_path.as_str().to_string();
-        let root_part_str = gui_root_part.as_str().to_string(); 
-        let efi_part_str = gui_efi_part.as_str().to_string();   
+        
+        // Safety check to strip the dummy placeholder text if it accidentally gets passed
+        let mut root_part_str = gui_root_part.as_str().to_string(); 
+        if root_part_str.contains("Select") { root_part_str = "".to_string(); }
+        
+        let mut efi_part_str = gui_efi_part.as_str().to_string();   
+        if efi_part_str.contains("Select") { efi_part_str = "".to_string(); }
         
         let host_str = hostname.as_str().to_string();
         let user_str = username.as_str().to_string();
@@ -363,8 +371,9 @@ fn main() -> Result<(), slint::PlatformError> {
             let mut current_progress: f32 = 0.0;
             let mut dynamic_status_text = String::new();
             
+            // NEW METRICS FOR LIVE PARSING
             let mut total_packages: f32 = 0.0;
-            let mut is_downloading = false;
+            let mut downloaded_count: f32 = 0.0;
             
             let mut log_lines: Vec<String> = vec![
                 "> Initiating Kestrel Arch Deployment Protocol...".to_string(),
@@ -396,20 +405,34 @@ fn main() -> Result<(), slint::PlatformError> {
                                     if output.contains("Formatting") || output.contains("partition") {
                                         current_progress = 0.10;
                                     } 
-                                    // 1. HARDENED WATCHER: Look for the silent download phase prompt!
+                                    // 1. CAPTURE THE TOTAL PACKAGE COUNT
                                     else if output.contains("Packages (") && output.contains(')') {
                                         let text_after = output.split("Packages (").nth(1).unwrap_or("");
                                         let num_str = text_after.split(')').next().unwrap_or("");
                                         if let Ok(total) = num_str.parse::<f32>() {
                                             total_packages = total;
-                                            is_downloading = true; // Turn ON physical disk watcher
                                             dynamic_status_text = format!("Preparing to download {} packages...", total);
                                             is_package_spam = true;
                                         }
                                     } 
-                                    // 2. CATCH THE INSTALLATION PHASE (e.g. "( 1/580) upgrading linux")
+                                    // 2. THE NEW LINE PARSER (Bye-bye dumb file watcher!)
+                                    else if output.ends_with(" downloading...") {
+                                        downloaded_count += 1.0;
+                                        if total_packages > 0.0 {
+                                            let ratio = (downloaded_count / total_packages).min(1.0);
+                                            current_progress = 0.15 + (0.35 * ratio);
+                                            dynamic_status_text = format!("Downloading packages... ({}/{})", downloaded_count as u32, total_packages as u32);
+                                        }
+                                        is_package_spam = true;
+                                    }
+                                    // 3. CATCH INTEGRITY CHECKS (Instantly kill download phase)
+                                    else if output.contains("checking package integrity") || output.contains("checking keyring") || output.contains("resolving dependencies") {
+                                        current_progress = 0.50;
+                                        dynamic_status_text = output.to_string();
+                                        is_package_spam = true;
+                                    }
+                                    // 4. CATCH THE INSTALLATION PHASE
                                     else if output.starts_with('(') && output.contains('/') && output.contains(')') {
-                                        is_downloading = false; // Turn OFF the watcher, downloading is done
                                         let bracket_part = output.split(')').next().unwrap_or("");
                                         let nums: String = bracket_part.chars().filter(|c| c.is_ascii_digit() || *c == '/').collect();
                                         let num_parts: Vec<&str> = nums.split('/').collect();
@@ -429,6 +452,7 @@ fn main() -> Result<(), slint::PlatformError> {
                                     }
 
                                     if !output.is_empty() {
+                                        // Hide spammy download logs from the UI box so it doesn't jitter wildly
                                         if !is_package_spam && !output.contains("Packages (") {
                                             log_lines.push(format!("> {}", output));
                                         }
@@ -450,26 +474,6 @@ fn main() -> Result<(), slint::PlatformError> {
                         }
 
                         if last_ui_update.elapsed() >= update_interval {
-                            
-                            // ========================================================
-                            // THE PHYSICAL DISK HACK (Looking at the correct Host Cache)
-                            // ========================================================
-                            if is_downloading && total_packages > 0.0 {
-                                // FIXED: Pointed to /var/cache/pacman/pkg/ (Live ISO RAM space)
-                                if let Ok(entries) = std::fs::read_dir("/var/cache/pacman/pkg/") {
-                                    let downloaded = entries.filter_map(Result::ok)
-                                        .filter(|e| {
-                                            let name = e.file_name().to_string_lossy().to_string();
-                                            name.ends_with(".pkg.tar.zst") || name.ends_with(".pkg.tar.xz") || name.ends_with(".part")
-                                        })
-                                        .count() as f32;
-                                    
-                                    let ratio = (downloaded / total_packages).min(1.0);
-                                    current_progress = 0.15 + (0.35 * ratio);
-                                    dynamic_status_text = format!("Downloading packages... ({}/{})", downloaded as u32, total_packages as u32);
-                                }
-                            }
-
                             let mut display_log = log_lines.clone();
                             let active_line = current_line.trim();
                             
