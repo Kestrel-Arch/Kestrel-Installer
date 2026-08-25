@@ -196,10 +196,11 @@ export component InstallerWindow inherits Window {
     property <string> selected_part: "1. WIPE (Erase Entire Disk)";
     
     property <string> target_filesystem: "ext4";
-    property <string> replace_partition_path: "Choose target partition";
     
-    property <string> gui_root_part: "Select Root (/)"; 
-    property <string> gui_efi_part: "Select EFI (/boot)"; 
+    // UX FIX: Safe placeholder defaults for Partition dropdowns
+    property <string> replace_partition_path: "Select Partition...";
+    property <string> gui_root_part: "Select Partition..."; 
+    property <string> gui_efi_part: "Select Partition..."; 
     
     property <string> in_hostname: "";
     property <string> in_username: "";
@@ -509,7 +510,7 @@ export component InstallerWindow inherits Window {
                             text: "Confirm & Continue"; 
                             primary: true; 
                             clicked => { 
-                                if (root.replace_partition_path == "Choose target partition" || root.replace_partition_path == "") {
+                                if (root.replace_partition_path == "Select Partition..." || root.replace_partition_path == "") {
                                     root.error_message = "Please select a valid target partition to replace.";
                                     root.show_error_popup = true;
                                 } else {
@@ -582,12 +583,12 @@ export component InstallerWindow inherits Window {
                         HorizontalBox {
                             spacing: 10px;
                             Text { text: "Root (/) Partition:"; color: #D1D5DB; font-size: 12px; vertical-alignment: center; }
-                            ComboBox { model: root.available_partitions; current-value: root.gui_root_part; selected(val) => { root.gui_root_part = val; } width: 140px; height: 32px; }
+                            ComboBox { model: root.available_partitions; current-value: root.gui_root_part; selected(val) => { root.gui_root_part = val; } width: 160px; height: 32px; }
                         }
                         HorizontalBox {
                             spacing: 10px;
                             Text { text: "EFI (/boot) Partition:"; color: #D1D5DB; font-size: 12px; vertical-alignment: center; }
-                            ComboBox { model: root.available_partitions; current-value: root.gui_efi_part; selected(val) => { root.gui_efi_part = val; } width: 140px; height: 32px; }
+                            ComboBox { model: root.available_partitions; current-value: root.gui_efi_part; selected(val) => { root.gui_efi_part = val; } width: 160px; height: 32px; }
                         }
                     }
 
@@ -607,7 +608,7 @@ export component InstallerWindow inherits Window {
                         GlowingButton { 
                             text: "Next Step"; primary: true; width: 100px; height: 35px; 
                             clicked => { 
-                                if (root.gui_root_part == "Select Root (/)" || root.gui_efi_part == "Select EFI (/boot)") {
+                                if (root.gui_root_part == "Select Partition..." || root.gui_efi_part == "Select Partition...") {
                                     root.error_message = "Please assign both a Root (/) and EFI (/boot) partition before continuing.";
                                     root.show_error_popup = true;
                                 } else {
