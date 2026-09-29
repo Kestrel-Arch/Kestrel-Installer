@@ -1,0 +1,23 @@
+[application]
+name = "kestrel-web"
+default_platform = "web"
+out_dir = "dist"
+asset_dir = "public"
+
+[web.app]
+title = "Kestrel Arch — Deployment & Recovery Engine"
+
+[web.watcher]
+reload_html = true
+watch_path = ["src", "public"]
+
+# CRITICAL FOR GITHUB PAGES:
+# Because GitHub Pages is served from https://kestrel-arch.github.io/Kestrel-Installer/
+# and NOT the root domain, base_path ensures your wasm and js files load properly.
+[web.resource]
+base_path = "/Kestrel-Installer/"
+style = []
+script = []
+
+[web.resource.dev]
+base_path = "/"
