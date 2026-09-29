@@ -302,12 +302,7 @@ export component InstallerWindow inherits Window {
                         Text { text: "Target Installation to Repair:"; font-size: 12px; font-weight: 600; color: #D1D5DB; }
                         ComboBox {
                             model: InstallerLogic.detected_install_labels;
-                            current-index: root.repair_install_idx;
-                            selected(val) => {
-                                for (lbl, i) in InstallerLogic.detected_install_labels : {
-                                    if (lbl == val) { root.repair_install_idx = i; }
-                                }
-                            }
+                            current-index <=> root.repair_install_idx;
                             height: 35px;
                         }
                     }
