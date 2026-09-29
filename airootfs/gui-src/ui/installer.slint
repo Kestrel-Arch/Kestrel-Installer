@@ -16,6 +16,12 @@ export struct PartitionData {
     stretch: float, 
 }
 
+export struct DetectedInstall {
+    partition: string,
+    os_id: string,
+    label: string,
+}
+
 export global InstallerLogic {
     callback start_install(string, string, string, string, string, string, string, string, string, string, string, string, string, string, string);
     callback poweroff_system();
@@ -28,8 +34,16 @@ export global InstallerLogic {
     callback launch_gparted(string);
     callback fetch_partitions(string); 
     callback close_installer();
+
+    // REPAIR ENGINE CALLBACKS & MODELS
+    callback scan_existing_installations();
+    callback start_repair(int, string, string, string);
     
     in-out property <[PartitionData]> current_partitions;
+    in property <[string]> detected_install_labels: ["Scanning for systems..."];
+    in property <[string]> detected_install_os_ids: [];
+    in property <[string]> available_efi_partitions: ["None / Legacy MBR"];
+    in property <[string]> available_repair_bootloaders: ["GRUB", "Limine"];
     
     in property <float> progress: 0.0;
     in property <string> status_text: "Ready to deploy.";
@@ -214,6 +228,12 @@ export component InstallerWindow inherits Window {
 
     property <bool> show_console: false;
 
+    // REPAIR VIEW PROPERTIES
+    property <int> repair_install_idx: 0;
+    property <string> repair_kernel: "linux";
+    property <string> repair_bootloader: "GRUB";
+    property <string> repair_efi_part: "Select EFI Partition...";
+
     Rectangle {
         width: 880px;
         height: 640px;
@@ -252,10 +272,104 @@ export component InstallerWindow inherits Window {
                     VerticalBox {
                         spacing: 5px;
                         Text { text: "Kestrel Arch"; font-size: 56px; font-weight: 800; color: #A5F3FC; horizontal-alignment: center; letter-spacing: -1px; }
-                        Text { text: "Installer"; font-size: 56px; font-weight: 800; color: #A5F3FC; horizontal-alignment: center; letter-spacing: -1px; }
+                        Text { text: "Installer & Recovery"; font-size: 56px; font-weight: 800; color: #A5F3FC; horizontal-alignment: center; letter-spacing: -1px; }
                     }
-                    Text { text: "Efficient. Robust. Custom configurations. Built to scale your infrastructure, every time."; font-size: 13px; color: #9CA3AF; horizontal-alignment: center; }
-                    HorizontalBox { alignment: center; spacing: 20px; GlowingButton { text: "Begin Installation"; primary: true; clicked => { root.active_step = 1; } } }
+                    Text { text: "Universal Hardware Probing. Dynamic Execution. In-Place Recovery."; font-size: 13px; color: #9CA3AF; horizontal-alignment: center; }
+                    HorizontalBox {
+                        alignment: center; spacing: 20px;
+                        GlowingButton { text: "Begin Installation"; primary: true; clicked => { root.active_step = 1; } }
+                        GlowingButton {
+                            text: "Repair System";
+                            primary: false;
+                            clicked => {
+                                root.active_step = 70;
+                                InstallerLogic.scan_existing_installations();
+                            }
+                        }
+                    }
+                }
+
+                // =========================================================
+                // STEP 70: Dedicated In-Place Repair Engine Screen
+                // =========================================================
+                if (root.active_step == 70) : VerticalBox {
+                    alignment: center; spacing: 14px; padding-left: 50px; padding-right: 50px;
+                    Text { text: "Automated System Recovery"; font-size: 22px; font-weight: 700; color: #A5F3FC; horizontal-alignment: center; }
+                    Text { text: "Recover an existing Arch or CachyOS installation without wiping your personal files."; color: #9CA3AF; font-size: 12px; horizontal-alignment: center; }
+
+                    VerticalBox {
+                        spacing: 4px;
+                        Text { text: "Target Installation to Repair:"; font-size: 12px; font-weight: 600; color: #D1D5DB; }
+                        ComboBox {
+                            model: InstallerLogic.detected_install_labels;
+                            current-index: root.repair_install_idx;
+                            selected(val) => {
+                                for (lbl, i) in InstallerLogic.detected_install_labels : {
+                                    if (lbl == val) { root.repair_install_idx = i; }
+                                }
+                            }
+                            height: 35px;
+                        }
+                    }
+
+                    // Conditional Kernel Section: If target is CachyOS, enforce linux-cachyos
+                    if (InstallerLogic.detected_install_os_ids[root.repair_install_idx] == "cachyos") : VerticalBox {
+                        spacing: 2px;
+                        Text { text: "Target distribution is CachyOS."; color: #10B981; font-size: 12px; font-weight: 700; }
+                        Text { text: "Auto-assigning 'linux-cachyos' and BORE scheduler headers."; color: #9CA3AF; font-size: 11px; }
+                    }
+                    if (InstallerLogic.detected_install_os_ids[root.repair_install_idx] != "cachyos") : VerticalBox {
+                        spacing: 4px;
+                        Text { text: "Select Kernel:"; font-size: 12px; font-weight: 600; color: #D1D5DB; }
+                        ComboBox {
+                            model: ["linux", "linux-cachyos"];
+                            current-value: root.repair_kernel;
+                            selected(val) => { root.repair_kernel = val; }
+                            height: 35px;
+                        }
+                    }
+
+                    // Strictly show EFI Partition selector ONLY when running under UEFI
+                    if (root.is_efi_system) : VerticalBox {
+                        spacing: 4px;
+                        Text { text: "Target EFI Partition (ESP):"; font-size: 12px; font-weight: 600; color: #D1D5DB; }
+                        ComboBox {
+                            model: InstallerLogic.available_efi_partitions;
+                            current-value: root.repair_efi_part;
+                            selected(val) => { root.repair_efi_part = val; }
+                            height: 35px;
+                        }
+                    }
+
+                    VerticalBox {
+                        spacing: 4px;
+                        Text { text: "Select Bootloader:"; font-size: 12px; font-weight: 600; color: #D1D5DB; }
+                        ComboBox {
+                            // Uses the strictly filtered list from Rust (omitting UEFI-only bootloaders on BIOS)
+                            model: InstallerLogic.available_repair_bootloaders;
+                            current-value: root.repair_bootloader;
+                            selected(val) => { root.repair_bootloader = val; }
+                            height: 35px;
+                        }
+                    }
+
+                    HorizontalBox {
+                        alignment: center; spacing: 15px; padding-top: 15px;
+                        GlowingButton { text: "Back"; primary: false; clicked => { root.active_step = 0; } }
+                        GlowingButton {
+                            text: "Execute Repair";
+                            primary: true;
+                            clicked => {
+                                root.active_step = 6;
+                                InstallerLogic.start_repair(
+                                    root.repair_install_idx,
+                                    (InstallerLogic.detected_install_os_ids[root.repair_install_idx] == "cachyos") ? "linux-cachyos" : root.repair_kernel,
+                                    root.repair_bootloader,
+                                    root.repair_efi_part
+                                );
+                            }
+                        }
+                    }
                 }
 
                 // =========================================================
@@ -821,7 +935,7 @@ export component InstallerWindow inherits Window {
                                 
                                 Text {
                                     text: InstallerLogic.console_log;
-                                    color: #FFFFFF; // Pure white text to contrast the pure black background
+                                    color: #FFFFFF;
                                     font-size: 12px;
                                     font-family: "Cascadia Code, Consolas, monospace";
                                     wrap: word-wrap;
