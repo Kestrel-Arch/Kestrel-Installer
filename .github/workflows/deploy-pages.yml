@@ -5,11 +5,17 @@ on:
     branches: [main]
     paths:
       - 'web/**'
+      - '.github/workflows/deploy-pages.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
   pages: write
   id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -22,18 +28,47 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - name: Install Dioxus CLI
-        run: cargo install dioxus-cli
+      - name: Enable Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: web -> target
 
+      # Fast binary install (takes ~5-10s instead of 8+ minutes)
+      - name: Install Dioxus CLI
+        run: |
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall --no-confirm dioxus-cli
+
+      # Build and safely locate the generated static files
       - name: Build WebAssembly Landing Page
         run: |
           cd web
           dx build --release
+          cd ..
 
-      - name: Upload Artifact
+          # Create a guaranteed publish folder
+          mkdir -p dist
+
+          # Locate Dioxus output directory and copy files into dist
+          if [ -d "target/dx/kestrel-web/release/web/public" ]; then
+            cp -r target/dx/kestrel-web/release/web/public/* dist/
+          elif [ -d "web/target/dx/kestrel-web/release/web/public" ]; then
+            cp -r web/target/dx/kestrel-web/release/web/public/* dist/
+          elif [ -d "web/dist" ]; then
+            cp -r web/dist/* dist/
+          else
+            echo "[-] Locating generated index.html..."
+            find . -name "index.html"
+            exit 1
+          fi
+
+          # Ensure GitHub Pages serves all subdirectories and assets
+          touch dist/.nojekyll
+
+      - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: web/dist
+          path: dist
 
   deploy:
     needs: build
