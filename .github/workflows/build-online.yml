@@ -8,12 +8,18 @@ on:
       - 'CNAME'
       - 'LICENSE'
       - '.github/workflows/pages-build-deployment.yml'
+      - '.github/workflows/deploy-pages.yml'
+      - 'web/**'
       - 'docs/**'
       - 'bootstrap'
       - 'bootstrap/**'
   workflow_dispatch:
   schedule:
-    - cron: '33 2 * * *'
+    - cron: '0 12 * * *'
+
+concurrency:
+  group: "iso-online"
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 jobs:
   build-archiso-online:
@@ -27,28 +33,34 @@ jobs:
       options: --privileged
 
     steps:
-      - name: Pre-Install Git
-        run: pacman -Sy --noconfirm git
+      - name: Initialize Arch Keyring & Install Dependencies
+        run: |
+          echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Sy --noconfirm archlinux-keyring
+          pacman -Syu --noconfirm \
+            git archiso wget gawk mtools dosfstools erofs-utils squashfs-tools \
+            pacman-contrib rustup base-devel cmake pkgconf freetype2 fontconfig \
+            libx11 libxkbcommon libxcb wayland openssh rsync github-cli python-pip zstd tar
+          
+          pacman-key --recv-key 3056513887B78AEB --keyserver hkps://keyserver.ubuntu.com
+          pacman-key --lsign-key 3056513887B78AEB
+          pacman -U --noconfirm \
+            'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' \
+            'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst'
+          
+          rustup default stable
 
       - name: Checkout Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install Build Dependencies (Including Rust)
-        run: |
-          echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /etc/pacman.d/mirrorlist
-          pacman -Sy --noconfirm archlinux-keyring
-          pacman -Su --noconfirm
-          
-          pacman-key --init
-          pacman-key --recv-key 3056513887B78AEB --keyserver hkps://keyserver.ubuntu.com
-          pacman-key --lsign-key 3056513887B78AEB
-          pacman -U 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst' --noconfirm
-          
-          pacman -S --noconfirm archiso wget gawk mtools dosfstools erofs-utils squashfs-tools pacman-contrib rustup base-devel cmake pkgconf freetype2 fontconfig libx11 libxkbcommon libxcb wayland openssh rsync github-cli git
-          
-          rustup default stable
+      - name: Enable Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: airootfs/gui-src -> target
 
       - name: Build Kestrel GUI
         run: |
@@ -70,11 +82,12 @@ jobs:
           mkdir -p /tmp/kestrel_profile/airootfs/root
           
           sed 's/\r$//' airootfs/usr/local/bin/install.sh > /tmp/kestrel_profile/airootfs/usr/local/bin/install.sh
+          sed 's/\r$//' airootfs/usr/local/bin/kestrel-repair.sh > /tmp/kestrel_profile/airootfs/usr/local/bin/kestrel-repair.sh
           cp airootfs/gui-src/target/release/kestrel-gui /tmp/kestrel_profile/airootfs/usr/local/bin/kestrel-gui
           
           sed -i 's/^iso_name=.*/iso_name="Kestrel-Arch(online)"/' /tmp/kestrel_profile/profiledef.sh
           
-          sed -i '/file_permissions=(/a \  ["/usr/local/bin/install.sh"]="0:0:755"\n  ["/usr/local/bin/kestrel-gui"]="0:0:755"' /tmp/kestrel_profile/profiledef.sh
+          sed -i '/file_permissions=(/a \  ["/usr/local/bin/install.sh"]="0:0:755"\n  ["/usr/local/bin/kestrel-repair.sh"]="0:0:755"\n  ["/usr/local/bin/kestrel-gui"]="0:0:755"' /tmp/kestrel_profile/profiledef.sh
           
           sed -i 's/^compressor=.*/compressor="zstd"/' /tmp/kestrel_profile/profiledef.sh
 
@@ -96,7 +109,7 @@ jobs:
           mkarchiso -v -w /tmp/archiso-tmp -o out/ /tmp/kestrel_profile/
 
       - name: Upload ISO Artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: Kestrel-Arch-ISO-Online
           path: out/*.iso
@@ -106,11 +119,8 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ secrets.HF_REPO_ONLINE }}
         run: |
-          echo "=> Installing Git LFS and Python..."
-          pacman -Sy --noconfirm git-lfs python-pip
           pip install huggingface_hub --break-system-packages
           
-          echo "=> Preparing ISO..."
           ISO_FILE=$(ls out/*.iso 2>/dev/null | head -n 1)
           if [ -z "$ISO_FILE" ]; then
             echo "ERROR: No ISO file found in out/"
@@ -118,39 +128,32 @@ jobs:
           fi
           ISO_NAME=$(basename "$ISO_FILE")
           
-          echo "=> VAPORIZING and recreating the Hugging Face repository..."
           python -c "
           import os
           from huggingface_hub import HfApi
-          api = HfApi(token=os.environ.get('HF_TOKEN'))
-          repo = os.environ.get('HF_REPO')
+          
+          api = HfApi(token=os.environ['HF_TOKEN'])
+          repo = os.environ['HF_REPO']
+          iso_path = '$ISO_FILE'
+          iso_name = '$ISO_NAME'
           
           try:
               api.delete_repo(repo_id=repo, repo_type='dataset')
-              print(f'Successfully deleted {repo}')
+              print(f'Deleted old {repo}')
           except Exception as e:
-              print(f'Repo might not exist yet: {e}')
+              print(f'Repo did not exist or could not be deleted: {e}')
               
           api.create_repo(repo_id=repo, repo_type='dataset', private=False)
-          print(f'Created fresh, empty repo {repo}')
+          print(f'Uploading {iso_name} directly to {repo}...')
+          api.upload_file(
+              path_or_fileobj=iso_path,
+              path_in_repo=iso_name,
+              repo_id=repo,
+              repo_type='dataset',
+              commit_message=f'Automated Online ISO deployment: {iso_name} [skip ci]'
+          )
+          print('=> Direct Hugging Face upload complete!')
           "
-          
-          echo "=> Cloning the fresh repository..."
-          git lfs install
-          git clone https://user:$HF_TOKEN@huggingface.co/datasets/$HF_REPO hf_dataset
-          cd hf_dataset
-          
-          git config user.name "Kestrel Bot"
-          git config user.email "actions@users.noreply.github.com"
-          
-          cp ../$ISO_FILE ./
-          git lfs track "*.iso"
-          
-          git add .
-          git commit -m "Automated Online ISO deployment: $ISO_NAME [skip ci]"
-          git push origin main
-          
-          echo "=> Hugging Face nuclear deployment successful! Storage bloat is now 0 bytes."
 
       - name: Create or Update Rolling GitHub Release
         env:
@@ -164,7 +167,6 @@ jobs:
           
           git config --global --add safe.directory '*' || true
           
-          # FIX: Only parses commits that actually modified the GUI or installer backend
           CHANGELOG=$(git log -10 --pretty=format:"- %s" -- airootfs/ 2>/dev/null)
           [ -z "$CHANGELOG" ] && CHANGELOG="- Routine updates and maintenance."
           
@@ -181,10 +183,8 @@ jobs:
             echo "*Updated automatically via GitHub Actions.*"
           } > release_notes.md
           
-          echo "=> Deleting old release to reset GitHub timestamp..."
           gh release delete "$RELEASE_TAG" -y 2>/dev/null || true
           
-          echo "=> Pushing fresh tag and creating new release..."
           git tag -f "$RELEASE_TAG"
           git push origin "$RELEASE_TAG" --force
           
