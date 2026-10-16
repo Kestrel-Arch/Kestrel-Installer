@@ -2,7 +2,7 @@ name: Deploy Rust Web Landing Page
 
 on:
   push:
-    branches: [main]
+    branches: [ "main" ]
     paths:
       - 'web/**'
       - '.github/workflows/deploy-pages.yml'
@@ -21,9 +21,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
+      - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -33,7 +34,15 @@ jobs:
         with:
           workspaces: web -> target
 
+      - name: Cache Dioxus CLI
+        id: cache-dx
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/dx
+          key: ${{ runner.os }}-dioxus-cli-v0.5
+
       - name: Install Dioxus CLI
+        if: steps.cache-dx.outputs.cache-hit != 'true'
         run: |
           curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
           cargo binstall --no-confirm dioxus-cli
@@ -46,7 +55,6 @@ jobs:
 
           mkdir -p dist
 
-          # Copy output files from wherever dx places them
           if [ -d "target/dx/kestrel-web/release/web/public" ]; then
             cp -r target/dx/kestrel-web/release/web/public/* dist/
           elif [ -d "web/target/dx/kestrel-web/release/web/public" ]; then
