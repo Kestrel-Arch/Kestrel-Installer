@@ -8,10 +8,16 @@ on:
       - 'CNAME'
       - 'LICENSE'
       - '.github/workflows/pages-build-deployment.yml'
+      - '.github/workflows/deploy-pages.yml'
+      - 'web/**'
       - 'docs/**'
       - 'bootstrap'
       - 'bootstrap/**'
   workflow_dispatch:
+
+concurrency:
+  group: "release-gui"
+  cancel-in-progress: true
 
 jobs:
   release-binary:
@@ -22,18 +28,28 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install Rust Stable & Build Dependencies
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Enable Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: airootfs/gui-src -> target
+
+      - name: Install Build Dependencies
         run: |
-          rustup default stable
           sudo apt-get update
           sudo apt-get install -y cmake pkg-config libfontconfig1-dev libx11-dev libxkbcommon-dev libwayland-dev
 
       - name: Build Kestrel GUI (Release Mode)
         run: |
+          mkdir -p airootfs/gui-src/ui/fonts
+          cp Geomini.ttf airootfs/gui-src/ui/fonts/ 2>/dev/null || true
+          cp CascadiaCode.ttf airootfs/gui-src/ui/fonts/ 2>/dev/null || true
           cd airootfs/gui-src
           cargo build --release
 
@@ -47,11 +63,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 1. Set Rolling Release Tag
           RELEASE_TAG="latest-gui"
           
-          # 2. Extract Changelog focused strictly on GUI source modifications
-          PREV_TAG=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
+          PREV_TAG=$(gh release view "$RELEASE_TAG" --json tagName -q .tagName 2>/dev/null || true)
           git config --global --add safe.directory '*' || true
           
           if [ -n "$PREV_TAG" ] && git rev-parse "$PREV_TAG" >/dev/null 2>&1; then
@@ -62,7 +76,6 @@ jobs:
           
           [ -z "$CHANGELOG" ] && CHANGELOG="- Minor updates and stability improvements."
           
-          # 3. Create the Release Notes Markdown file safely
           {
             echo "### 🚀 What's Improved or Fixed"
             echo "$CHANGELOG"
@@ -71,7 +84,6 @@ jobs:
             echo "*Automated build of the Kestrel Arch Slint GUI engine.*"
           } > release_notes.md
           
-          # 4. Delete old release to reset timestamp and recreate
           echo "=> Deleting old release to reset GitHub timestamp..."
           gh release delete "$RELEASE_TAG" -y 2>/dev/null || true
           
@@ -82,5 +94,4 @@ jobs:
           gh release create "$RELEASE_TAG" \
             --title "Kestrel GUI - Latest Build" \
             --notes-file release_notes.md \
-            --latest \
             /tmp/release_asset/kestrel-gui
