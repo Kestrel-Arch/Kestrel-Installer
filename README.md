@@ -40,7 +40,7 @@ Kestrel Arch is an automated, hyper-optimized Arch Linux deployment system. It t
 | :--- | :--- | :--- |
 | **Architecture** | x86_64 | x86_64 |
 | **Firmware** | BIOS | UEFI |
-| **RAM** | 2 GB | 6 GB |
+| **RAM** | 1 GB | 2 GB |
 | **Storage** | 16 GB | 25 GB |
 | **Network** | No (Offline ISO) | Yes (Online Net-Installer) |
 
