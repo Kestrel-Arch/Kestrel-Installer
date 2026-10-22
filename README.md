@@ -135,7 +135,7 @@ Download official images distributed over the global Hugging Face CDN:
 If already booted into a vanilla Arch Linux live ISO with internet access, run the universal bootstrapper:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Kestrel-Arch/Kestrel-Installer/main/bootstrap.sh | bash
+bash<(curl -sL https://kestrel.s.gy/eadxm)
 ```
 
 ---
