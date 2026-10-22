@@ -33,7 +33,7 @@ jobs:
       options: --privileged
 
     steps:
-            - name: Initialize Arch Keyring & Install Dependencies
+      - name: Initialize Arch Keyring & Install Dependencies
         run: |
           cat << 'EOF' > /etc/pacman.d/mirrorlist
           Server = https://pkgbuild.com
