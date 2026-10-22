@@ -1,36 +1,49 @@
-#  Kestrel Arch Deployment Engine
+# Kestrel Arch Deployment Engine
 
-[![Build Status](https://img.shields.io/github/actions/workflow/status/eadxm/Kestrel-Arch/build.yml?branch=main&style=flat-square)](https://github.com/eadxm/Kestrel-Arch/actions)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/Kestrel-Arch/Kestrel-Installer/build.yml?branch=main&style=flat-square)](https://github.com/Kestrel-Arch/Kestrel-Installer/actions)
 [![Hosted on Hugging Face](https://img.shields.io/badge/🤗%20Hosted_on-Hugging_Face-ffce3a.svg?style=flat-square)](https://huggingface.co/datasets/eadxm)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg?style=flat-square)](https://www.gnu.org/licenses/agpl-3.0)
-[![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org/)
+[![Slint GUI](https://img.shields.io/badge/GUI-Slint_1.7-teal.svg?style=flat-square)](https://slint.dev/)
 [![Arch Linux](https://img.shields.io/badge/Arch_Linux-Rolling-1793d1.svg?style=flat-square&logo=arch-linux)](https://archlinux.org/)
 
-Kestrel Arch is an automated, hyper-optimized Arch Linux deployment system. It transforms a complex, multi-hour command-line installation into a flawless, 3-minute graphical deployment. Utilizing a memory-safe **Rust and Slint GUI** alongside a robust Bash provisioning backend, Kestrel dynamically scales to your hardware, firmware, and network environment.
+Kestrel Arch is an automated, hardware-aware Arch Linux provisioning platform and rescue system. Replacing brittle, linear shell scripts with a native, memory-safe **Rust execution engine (`engine.rs`)** and a hardware-accelerated **Slint Wayland GUI**, Kestrel delivers deterministic deployments in under 3 minutes while providing transactional rollbacks and self-healing system recovery.
 
 ![Kestrel Arch Dashboard](https://github.com/user-attachments/assets/6f6c3e1b-453b-4701-88d7-babf8f060d98)
 
 ---
 
 ## 📑 Table of Contents
-1. [Key Features](#-key-features)
-2. [System Requirements](#-system-requirements)
-3. [The Software Matrix](#-the-software-matrix)
-4. [Installation & Deployment](#-installation--deployment)
-5. [Architecture](#-architecture)
-6. [Troubleshooting & Recovery](#-troubleshooting--recovery)
-7. [Local Development](#-local-development)
-8. [License](#-license)
+1. [Core Architectural Upgrades](#-core-architectural-upgrades)
+2. [Key Features](#-key-features)
+3. [System Requirements](#-system-requirements)
+4. [The Software & Workspace Matrix](#-the-software--workspace-matrix)
+5. [Installation & Deployment](#-installation--deployment)
+6. [System Architecture & State Machine](#-system-architecture--state-machine)
+7. [In-Place Recovery & Self-Healing Guard](#-in-place-recovery--self-healing-guard)
+8. [Local Development](#-local-development)
+9. [Licensing](#-licensing)
+
+---
+
+## ⚡ Core Architectural Upgrades
+
+- **Pure-Rust Provisioning Engine:** Entirely eliminates legacy shell script dependencies (`install.sh` and `kestrel-repair.sh`). System partitioning, format verification, mount management, chroot orchestration, and bootloader deployments execute natively via Rust using `nix`, `sysinfo`, and `serde`.
+- **Transactional Rollback Guard (`TransactionalGuard`):** Implements Rust's `Drop` semantics for storage operations. If any stage experiences a fault (e.g., repository timeout or power loss), the engine triggers an automatic unwind—unmounting all virtual and physical mount points in reverse order (`MNT_DETACH`), disabling swap, and leaving the disk cleanly accessible.
+- **Superblock-Preserving Partitioning:** Fixes destructive re-formatting bugs during manual workflows. When using GParted or manual layout assignment, Kestrel probes partition superblocks (`btrfs`, `ext4`, `xfs`, `f2fs`) via native block inspection. User-formatted filesystems are preserved and mounted with tuned options (e.g., `compress=zstd:3,noatime` for Btrfs) rather than clobbered with default `ext4` formats.
+- **Asynchronous IPC Telemetry:** Communication between the Slint UI and execution threads runs over safe `std::sync::mpsc` channels, providing responsive, real-time stdout/stderr streaming, step-by-step progress calculations, and diagnostic reporting.
+- **Native CPUID & Hardware Topology Profiling:** Inspects instruction set extensions directly via `std::arch::is_x86_feature_detected!` (`x86-64-v4`, `v3`, `v2`, `v1`) to select optimized kernel trees (such as CachyOS BORE) without spawning external utilities.
 
 ---
 
 ## ✨ Key Features
 
-* **Dynamic Hardware Tuning:** Kestrel actively analyzes your machine during deployment to configure the optimal performance matrix, including ZRAM deployment, FSTRIM, and tailored I/O schedulers based on disk topology (NVMe/SSD/HDD).
-* **Intelligent Graphics Provisioning:** Automatically detects NVIDIA, AMD, and Intel arrays. Configures native PRIME Offload and `switcheroo-control`, allowing dedicated GPUs to enter ultra-low power states (D3) when idle.
-* **Kernel Optimization:** Defaults to the `linux-cachyos` kernel, utilizing BORE CPU scheduling, LTO, and 1000Hz tick rates for maximum desktop responsiveness.
-* **Network Stability:** Automatically generates strict localhost bindings, effectively neutralizing known Arch Linux network-hang vulnerabilities.
-* **Wayland-Native Kiosk:** The installer runs entirely in Wayland via the Cage compositor, delivering a lightweight, tear-free graphical experience.
+- **Automatic Mirror Failover:** The pacstrap engine implements an exponential-backoff retry loop with automatic `reflector` ranking to survive transient network drops and dead mirrors during net-installs.
+- **Comprehensive Localization:** Complete graphical configuration for system timezones, locales, and console/X11 keyboard layouts applied natively during deployment.
+- **Dynamic Hardware Tuning:** Probes block queue parameters (`/sys/block/*/queue/rotational`) to configure kernel I/O schedulers (`none` for NVMe, `mq-deadline` for SSDs, `bfq` for HDDs) and outputs persistent rules to `/etc/udev/rules.d/60-kestrel-iosched.rules`.
+- **Intelligent Graphics Provisioning:** Detects NVIDIA, AMD, and Intel GPUs via PCI vendor IDs. Deploys appropriate drivers, PRIME offload configurations, and udev power rules allowing discrete GPUs to enter D3cold sleep when idle.
+- **Laptop & Power Optimization:** Automatically identifies battery rails (`/sys/class/power_supply/BAT*`) and deploys `power-profiles-daemon`, `sof-firmware`, and `alsa-ucm-conf` for modern laptop hardware.
+- **Wayland Kiosk Deployment:** Runs isolated in Wayland through the Cage compositor, delivering tear-free performance with fallback software rendering (`pixman`) for legacy GPUs and virtual machines.
 
 ---
 
@@ -38,140 +51,192 @@ Kestrel Arch is an automated, hyper-optimized Arch Linux deployment system. It t
 
 | Requirement | Minimum | Recommended |
 | :--- | :--- | :--- |
-| **Architecture** | x86_64 | x86_64 |
-| **Firmware** | BIOS | UEFI |
-| **RAM** | 1 GB | 2 GB |
-| **Storage** | 16 GB | 25 GB |
-| **Network** | No (Offline ISO) | Yes (Online Net-Installer) |
+| **Architecture** | x86_64 (v1+) | x86_64-v3 / x86_64-v4 |
+| **Firmware** | Legacy BIOS | UEFI (GPT) |
+| **RAM** | 1.5 GB (With ZRAM swap) | 4 GB+ |
+| **Storage** | 16 GB | 30 GB+ NVMe/SSD |
+| **Network** | None (Offline ISO) | Active Connection (Online ISO) |
 
 ---
 
-## 📦 The Software Matrix
+## 📦 The Software & Workspace Matrix
 
-Kestrel offers a comprehensive library of desktop environments, window managers, and boot loaders. Whether you need a heavy-duty productivity suite or a hyper-minimalist tiling layout, it is pre-configured and ready to deploy.
+Kestrel provides tailored desktop environments, compositors, boot managers, and modern web browsers with isolated portal backends.
 
-### 🖥️ Workspaces (17+ Environments)
+### 🖥️ Workspaces (17 Environments)
 
 #### Wayland Native Compositors
-| Environment | Description |
+| Environment | Stack / Description |
 | :--- | :--- |
-| **Hyprland** | A highly customizable, dynamic tiling Wayland compositor known for fluid animations. *(Default)* |
-| **Sway** | A robust, drop-in Wayland replacement for the i3 window manager. |
-| **Niri** | A modern, scrollable-tiling Wayland compositor with a unique infinite-ribbon workflow. |
-| **Wayfire** | A 3D Wayland compositor inspired by Compiz, focusing on rich visual effects. |
-| **Cosmic** | System76's next-generation, Rust-based desktop environment. |
+| **Hyprland** | Dynamic tiling Wayland compositor with `xdg-desktop-portal-hyprland`. *(Default)* |
+| **Sway** | Stable, drop-in Wayland tiling compositor configured with `xdg-desktop-portal-wlr`. |
+| **Niri** | Modern scrollable-tiling Wayland compositor engineered in Rust on Smithay. |
+| **Wayfire** | 3D-accelerated wlroots Wayland compositor emphasizing smooth visual layouts. |
+| **Cosmic** | System76's next-generation Rust desktop environment built on Iced and Smithay. |
 
 #### Full Desktop Suites
-| Environment | Description |
+| Environment | Stack / Description |
 | :--- | :--- |
-| **KDE Plasma** | A highly customizable, feature-rich, and visually stunning modern desktop. |
-| **GNOME** | A polished, focused desktop experience with a unique, distraction-free workflow. |
-| **Cinnamon** | A traditional, user-friendly, and elegant desktop built originally for Linux Mint. |
-| **Budgie** | A tightly integrated and modern desktop environment built by the Solus project. |
-| **MATE** | A continuation of GNOME 2, offering a stable, classic, and traditional interface. |
+| **KDE Plasma 6** | Feature-rich Wayland desktop with native systemd integration and power management. |
+| **GNOME 46+** | Modern desktop with isolated Wayland display services and GDM integration. |
+| **Cinnamon** | Traditional desktop paradigm with refined GTK-based layout controls. |
+| **Budgie** | Ergonomic and lightweight desktop built around modern GTK foundations. |
+| **MATE** | Classic GNOME 2 continuation tuned for speed and traditional layouts. |
 
-#### Tiling & Lightweight (X11/Hybrid)
-| Environment | Description |
+#### Tiling & Lightweight (X11 / Hybrid)
+| Environment | Stack / Description |
 | :--- | :--- |
-| **XFCE** | A fast, exceptionally lightweight, and rock-solid traditional desktop environment. |
-| **i3-wm** | A popular, extensively documented manual tiling window manager for X11. |
-| **Qtile** | A full-featured, hackable tiling window manager written and configured in Python. |
-| **bspwm** | A minimal, high-performance tiling window manager that uses a binary tree structure. |
-| **LXQt** | A lightweight, modern Qt desktop environment and the successor to LXDE. |
-| **LXDE** | An extremely resource-efficient, classic desktop environment for older hardware. |
-| **Openbox** | A highly configurable, bare-bones window manager with extensive standards support. |
+| **XFCE 4.18+** | Resource-efficient traditional desktop prioritizing low overhead and stability. |
+| **i3-wm** | Popular manual tiling window manager for X11 utilizing clean text configurations. |
+| **Qtile** | Hackable X11/Wayland tiling window manager configured in Python. |
+| **bspwm** | Binary space partitioning tiling window manager driven through `sxhkd`. |
+| **LXQt** | Fast, lightweight desktop environment engineered on the Qt6 framework. |
+| **LXDE** | Legacy-focused, minimal footprint X11 desktop environment. |
+| **Openbox** | Standalone, standards-compliant stacking window manager. |
 
 ### 🚀 Boot Managers & Web Browsers
 
 #### Boot Managers
-| Bootloader | Description |
-| :--- | :--- |
-| **GRUB** | A highly configurable, battle-tested bootloader featuring robust BTRFS snapshot integration. |
-| **systemd-boot** | A minimalist, EFI-native boot manager that is exceptionally fast and deeply integrated. |
-| **rEFInd** | A visually appealing, graphical boot manager with excellent auto-detection of operating systems. |
-| **Limine** | A modern, high-speed, and easily customizable bootloader with a clean configuration syntax featuring BTRFS snapshot integration. |
+| Bootloader | Firmware Support | Description |
+| :--- | :--- | :--- |
+| **GRUB** | BIOS & UEFI | Modular bootloader with multi-boot detection (`os-prober`) and Btrfs snapshot support. |
+| **Limine** | BIOS & UEFI | High-performance, clean-syntax bootloader supporting native UEFI and BIOS chainloading. |
+| **systemd-boot** | UEFI Only | Minimalist, firmware-native EFI boot manager with automatic kernel entry updates. |
+| **rEFInd** | UEFI Only | Graphical EFI boot manager featuring automatic OS detection. |
 
 #### Web Browsers
-| Browser | Description |
-| :--- | :--- |
-| **Falkon** | A fast, exceptionally lightweight Qt-based web browser designed for speed and low memory footprint. |
-| **Zen Browser** | A highly optimized, privacy-centric browser built for speed and modern workflows. *(Recommended)* |
-| **LibreWolf** | A custom, hardened version of Firefox engineered for maximum privacy and security out of the box. |
-| **Firefox** | The powerful, open-source standard with massive extension support and customization. |
-| **Brave** | A fast, Chromium-based browser featuring native, aggressive ad-blocking and tracking protection. |
+| Browser | Profile | Description |
+| :--- | :--- | :--- |
+| **Falkon** | Offline Default | Lightweight Qt6 browser pre-cached on offline media for air-gapped readiness. |
+| **Zen Browser** | Recommended | Performance-tuned Firefox fork focusing on privacy, tabs, and modern styling. |
+| **LibreWolf** | Hardened | Privacy-hardened Firefox engine with tracking protection pre-configured. |
+| **Firefox** | Standard | Open-source web platform with comprehensive extension ecosystem. |
+| **Brave** | Chromium | Chromium-based browser with native ad and tracker blocking. |
 
 ---
 
 ## 🚀 Installation & Deployment
 
-### Method 1: The Graphical ISO (Recommended)
-We provide two pre-compiled ISO variants, both hosted on our lightning-fast **Hugging Face Global CDN** so you can max out your download speeds with absolutely no VPN required.
+### Method 1: Pre-Built ISO (Recommended)
+Download official images distributed over the global Hugging Face CDN:
 
-* **Offline ISO (~4.3 GB):** Features a full package cache. Deploy a complete desktop environment without an active internet connection.
-* **Online ISO (~1.7 GB):** A lightweight net-installer that fetches the absolute latest packages during deployment.
+- **Offline ISO (~4.3 GB):** Self-contained package cache (`kestrel-offline.db.tar.gz`). Installs Hyprland, KDE Plasma 6, or XFCE with zero internet connectivity.
+- **Online ISO (~1.7 GB):** Minimal live image that fetches bleeding-edge packages directly from Arch and Chaotic-AUR mirrors during installation.
 
-1. **Download:** Navigate to the **[Releases](https://github.com/eadxm/Kestrel-Arch/releases)** tab and click the direct CDN download link for your preferred ISO variant.
-2. **Flash:** Write the ISO to a USB drive using [Rufus](https://rufus.ie/) (DD Mode), [BalenaEtcher](https://balena.io/etcher/), or [Ventoy](https://www.ventoy.net).
-3. **Deploy:** Boot from the USB. The system auto-launches the Kestrel UI.
-4. **Configure:** Select your target drive, input user credentials, select your environment, and click **Initialize Protocol**.
-5. **Reboot:** Monitor the live terminal output, and click the reboot prompt once the deployment succeeds.
+1. **Download:** Grab the latest image from the **[Releases](https://github.com/Kestrel-Arch/Kestrel-Installer/releases)** tab.
+2. **Flash:** Write the ISO to a USB flash drive using `dd`, [Ventoy](https://www.ventoy.net), or [BalenaEtcher](https://balena.io/etcher/):
+   ```bash
+   sudo dd if=Kestrel-Arch-offline.iso of=/dev/sdX bs=4M status=progress oflag=sync
+   ```
+3. **Boot:** Boot in UEFI or BIOS mode. The system auto-launches the Slint graphical installer.
+4. **Deploy:** Select your drive, configure credentials and locale, select your workspace, and begin deployment.
 
-### Method 2: Headless Network Deployment (CLI)
-If you are already booted into a standard Arch Linux live USB and connected to the internet (via `iwctl`), you can trigger the Kestrel engine directly via terminal:
+### Method 2: Live Arch USB Bootstrapper
+If already booted into a vanilla Arch Linux live ISO with internet access, run the universal bootstrapper:
 
 ```bash
-bash<(curl -sL https://kestrel.s.gy/eadxm)
+curl -fsSL https://raw.githubusercontent.com/Kestrel-Arch/Kestrel-Installer/main/bootstrap.sh | bash
 ```
 
 ---
 
-## 🏗️ Architecture
-
-Kestrel utilizes a clean, decoupled architecture passing configurations safely from the GUI to the system level:
+## 🏗️ System Architecture & State Machine
 
 ```text
-[ ISO Boot ] ➔ [ Cage Wayland Compositor ] ➔ [ Rust/Slint GUI ] ➔ [ Env Var Injection ] ➔ [ Bash Backend ] ➔ [ Chroot Config ] ➔ [ Safe Reboot ]
+┌────────────────────────────────────────────────────────────────────────┐
+│                        Kestrel Arch Execution Flow                     │
+└────────────────────────────────────────────────────────────────────────┘
+                                 │
+                     [ ISO Boot / Cage Wayland ]
+                                 │
+                     [ Slint UI Event Loop ]
+                                 │ (Typed Settings)
+                    [ DeploymentManifest::validate() ]
+                                 │
+               ┌─────────────────┴─────────────────┐
+               ▼                                   ▼
+      [ TransactionalGuard ]              [ Hardware Probing ]
+      • Pinned Mount Points               • CPUID Microarch Level
+      • Virtual VFS (/proc, /sys)         • Disk Topology & Rotation
+      • Rollback Handler on Fault         • GPU Vendor Probing
+               │                                   │
+               └─────────────────┬─────────────────┘
+                                 │
+                     [ Rust Pacstrap Pipeline ]
+                     • Mirror Failover Engine
+                     • Scoped Dependency Resolution
+                                 │
+                    [ Native Chroot Operations ]
+                    • `nix::unistd::chroot` Execution
+                    • UUID-Pinned Fstab Generation
+                    • Timezone, Locale & Keymap Config
+                    • ALPM Guard (`kestrel-doctor`)
+                                 │
+                   [ Bootloader Deployment & Sync ]
+                   • Limine / GRUB / Systemd-Boot
+                                 │
+                       [ Clean Unmount / Sync ]
 ```
 
 **Repository Structure:**
 
 ```text
-kestrel-arch/
-├── .github/workflows/   # Automated ISO build pipelines (CI/CD)
-├── src/                 # Rust backend logic (main.rs)
-├── ui/                  # Slint frontend designs (installer.slint, fonts, assets)
-├── backend/             # Bash deployment engine (install.sh)
-└── Cargo.toml           # Rust package configuration
+Kestrel-Installer/
+├── .github/workflows/          # CI/CD pipelines (Offline/Online ISOs, GUI Releases, Pages)
+├── airootfs/
+│   ├── gui-src/                # Rust & Slint native source code
+│   │   ├── Cargo.toml          # Rust dependencies & optimization profiles
+│   │   ├── build.rs            # Slint UI compiler build script
+│   │   ├── src/
+│   │   │   ├── main.rs         # Slint UI controller & telemetry channels
+│   │   │   └── engine.rs       # Native Rust provisioning & recovery backend
+│   │   └── ui/
+│   │       ├── installer.slint # Slint interface definitions & styles
+│   │       ├── fonts/          # Embedded typography (Geomini, Cascadia Code)
+│   │       └── logo.png        # Brand assets
+├── web/                        # Dioxus / Wasm landing page source
+├── bootstrap.sh                # Live ISO environment bootstrapper
+├── packages.x86_64             # Base live-environment package list
+└── README.md
 ```
 
 ---
 
-## 🚑 Troubleshooting & Recovery
+## 🚑 In-Place Recovery & Self-Healing Guard
 
-* **Virtual Machine Storage Limits:** If testing Kestrel Arch inside VirtualBox, VMware, or QEMU/KVM, you must allocate at least **25GB - 30GB** of virtual storage. Modern desktop environments require significant space during the extraction phase; undersized drives will cause the installer to abort.
-* **VM Cursor Flickering:** In virtualized environments without GPU passthrough, the UI relies on software rendering (`pixman`). Rapid mouse movement may cause the cursor to flicker. This is an emulator artifact and does not happen on real hardware.
-* **Fail-Safe Shell:** If the Bash backend detects a critical failure (e.g., a dead drive sector or missing package), it instantly halts all disk writes, unmounts the system, and drops you into a **Live Zsh Recovery Shell** to diagnose the issue safely.
+Kestrel is designed to protect systems across their rolling-release lifecycle:
+
+### Automated ALPM Kernel Guard
+Every installed system receives a post-transaction hook located at `/etc/pacman.d/hooks/99-kestrel-guard.hook`. Following any kernel package upgrade or modification to `/usr/lib/modules/*/vmlinuz`, the hook calls `/usr/local/bin/kestrel-doctor`. If an update was interrupted or corrupted:
+1. It clears stale `/var/lib/pacman/db.lck` locks.
+2. It verifies the presence and size of `/boot/vmlinuz-*` and `/boot/initramfs-*.img`.
+3. It automatically synchronizes modules and invokes `mkinitcpio -P`, preventing unbootable system states.
+
+### In-Place System Recovery
+If an external failure prevents booting:
+1. Boot the Kestrel Live USB and click **Repair System** on the home screen (or run `kestrel-gui --repair`).
+2. The engine scans connected storage for existing Arch Linux, CachyOS, or Kestrel root filesystems (including Btrfs subvolumes).
+3. Select your kernel (`linux` or `linux-cachyos`) and bootloader. Kestrel mounts the installation in a managed jail, repairs broken modules, regenerates all initramfs images, and updates bootloader entries without modifying personal data in `/home`.
 
 ---
 
 ## 🛠️ Local Development
 
-Contributions are highly encouraged! To tweak the UI or add new features to the Rust backend:
+### Prerequisites
+- Rust stable toolchain (`rustup default stable`)
+- System libraries: `cmake`, `pkgconf`, `fontconfig`, `freetype2`, `libx11`, `libxkbcommon`, `wayland`
 
-**Prerequisites:**
-* Rust toolchain (`rustup default stable`)
-* Slint dependencies and system fonts (Cascadia Code, Geomini)
-
-**Build Instructions:**
-Compile and run the UI directly on your host machine to test layout changes without triggering destructive disk-formatting bash scripts.
-
+### Building the Native Installer
 ```bash
-git clone https://github.com/eadxm/Kestrel-Arch.git
-cd Kestrel-Arch
-cargo run --release
+git clone https://github.com/Kestrel-Arch/Kestrel-Installer.git
+cd Kestrel-Installer/airootfs/gui-src
+cargo build --release
 ```
 
-> **Note:** Please ensure your Rust code passes `cargo clippy` and your Slint layouts remain responsive before submitting a PR.
+Run the interface locally (destructive storage operations are gated behind confirmation dialogs):
+```bash
+cargo run --release
+```
 
 ---
 
@@ -179,10 +244,7 @@ cargo run --release
 
 Kestrel Arch is dual-licensed:
 
-1. **Open-Source / Non-Commercial [AGPL v3](LICENSE):** 
-   This project is free software licensed under the **GNU AGPL v3**. You can freely use, modify, and distribute it under the terms of the AGPL, provided any derivative works are also open-sourced under the same license.
-2. **Commercial / Proprietary Licensing:** 
-   If you wish to use Kestrel Arch, or any modified version of it, in a commercial product, enterprise environment, or closed-source application without complying with the copyleft terms of the AGPL, you **must** purchase a Commercial License. 
-   
-   *For commercial licensing inquiries, contact:* **kestrel.arch.dev@gmail.com**.
-
+1. **Open-Source / Non-Commercial [AGPL v3](LICENSE):**  
+   This project is free software licensed under the **GNU Affero General Public License v3**. You are free to run, study, modify, and redistribute it under the terms of the AGPL, provided all derivative works remain open-source under the same license terms.
+2. **Commercial / Proprietary Licensing:**  
+   To incorporate Kestrel Arch or its backend engine into commercial distributions, appliances, or closed-source products, contact the maintainers at **kestrel.arch.dev@gmail.com**.
