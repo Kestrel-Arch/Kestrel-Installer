@@ -45,7 +45,7 @@ echo "=> Maximizing Live RAM-disk capacity..."
 mount -o remount,size=4G /run/archiso/cowspace 2>/dev/null || true
 
 mkdir -p /usr/local/bin
-rm -f /usr/local/bin/kestrel-gui
+rm -f /usr/local/bin/kestrel-gui /usr/local/bin/kestrel-doctor
 
 if [ "$UI_CHOICE" = "1" ]; then
     echo "=> Initializing Graphical Environment in Live RAM..."
@@ -66,12 +66,15 @@ if [ "$UI_CHOICE" = "1" ]; then
     rm -rf /var/cache/pacman/pkg/*
     rm -rf /var/lib/pacman/sync/*
 
-    echo "=> Fetching Kestrel Rust Engine & GUI Binary..."
+    echo "=> Fetching Kestrel Rust Engine Binaries..."
     curl -fL -# --retry 5 --retry-all-errors --retry-delay 3 -C - \
         "https://github.com/${GITHUB_REPO}/releases/download/latest-gui/kestrel-gui" \
         -o /usr/local/bin/kestrel-gui
+    curl -fL -# --retry 5 --retry-all-errors --retry-delay 3 -C - \
+        "https://github.com/${GITHUB_REPO}/releases/download/latest-gui/kestrel-doctor" \
+        -o /usr/local/bin/kestrel-doctor
     sync
-    chmod +x /usr/local/bin/kestrel-gui
+    chmod +x /usr/local/bin/kestrel-gui /usr/local/bin/kestrel-doctor
 
     echo "=> Initializing Wayland Compositor Environment..."
     export XDG_RUNTIME_DIR=/run/user/$(id -u)
@@ -93,12 +96,15 @@ if [ "$UI_CHOICE" = "1" ]; then
     echo "=> Launching Kestrel GUI..."
     exec cage -s -- /usr/local/bin/kestrel-gui
 else
-    echo "=> Fetching Kestrel Rust Engine Binary..."
+    echo "=> Fetching Kestrel Rust Engine Binaries..."
     curl -fL -# --retry 5 --retry-all-errors --retry-delay 3 -C - \
         "https://github.com/${GITHUB_REPO}/releases/download/latest-gui/kestrel-gui" \
         -o /usr/local/bin/kestrel-gui
+    curl -fL -# --retry 5 --retry-all-errors --retry-delay 3 -C - \
+        "https://github.com/${GITHUB_REPO}/releases/download/latest-gui/kestrel-doctor" \
+        -o /usr/local/bin/kestrel-doctor
     sync
-    chmod +x /usr/local/bin/kestrel-gui
+    chmod +x /usr/local/bin/kestrel-gui /usr/local/bin/kestrel-doctor
 
     echo "=> Launching In-Place CLI Recovery..."
     lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT

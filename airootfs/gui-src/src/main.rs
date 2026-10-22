@@ -3,8 +3,8 @@ mod engine;
 slint::include_modules!();
 
 use engine::{
-    probe_hardware_topology, BootloaderType, DeploymentManifest, InstallMode, PartitionStrategy,
-    RepairManifest, TelemetryEvent,
+    export_diagnostic_log, probe_hardware_topology, run_native_doctor, BootloaderType,
+    DeploymentManifest, InstallMode, PartitionStrategy, RepairManifest, TelemetryEvent,
 };
 use slint::{ModelRc, SharedString, VecModel};
 use std::env;
@@ -193,10 +193,24 @@ fn probe_existing_systems() -> (Vec<ExistingInstall>, Vec<String>) {
 fn attach_telemetry_stream(
     rx: mpsc::Receiver<TelemetryEvent>,
     ui_weak: slint::Weak<InstallerWindow>,
+    full_log_store: Arc<Mutex<Vec<String>>>,
     initial_logs: Vec<String>,
 ) {
+    {
+        let mut store = full_log_store.lock().unwrap();
+        *store = initial_logs.clone();
+        let joined = store.join("\n");
+        let _ = fs::write("/tmp/kestrel-install.log", &joined);
+        let ui_init = ui_weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui_init.upgrade() {
+                ui.global::<InstallerLogic>().set_install_failed(false);
+                ui.global::<InstallerLogic>().set_console_log(joined.into());
+            }
+        });
+    }
+
     thread::spawn(move || {
-        let mut logs = initial_logs;
         while let Ok(event) = rx.recv() {
             match event {
                 TelemetryEvent::Progress(p) => {
@@ -216,12 +230,13 @@ fn attach_telemetry_stream(
                     });
                 }
                 TelemetryEvent::Log(line) => {
-                    logs.push(line);
-                    if logs.len() > 120 {
-                        let excess = logs.len() - 120;
-                        logs.drain(0..excess);
-                    }
-                    let joined = logs.join("\n");
+                    let joined = {
+                        let mut store = full_log_store.lock().unwrap();
+                        store.push(line);
+                        let j = store.join("\n");
+                        let _ = fs::write("/tmp/kestrel-install.log", &j);
+                        j
+                    };
                     let ui_copy = ui_weak.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_copy.upgrade() {
@@ -240,8 +255,17 @@ fn attach_telemetry_stream(
                     break;
                 }
                 TelemetryEvent::Fault(err) => {
-                    logs.push(format!("\n[!] CRITICAL FAULT: {}", err));
-                    let joined = logs.join("\n");
+                    let joined = {
+                        let mut store = full_log_store.lock().unwrap();
+                        store.push(format!("\n[!] CRITICAL FAULT: {}", err));
+                        store.push(
+                            "> Tip: Click 'Export Log to USB' below to save the full diagnostic log to your flash drive."
+                            .to_string(),
+                        );
+                        let j = store.join("\n");
+                        let _ = fs::write("/tmp/kestrel-install.log", &j);
+                        j
+                    };
                     let ui_copy = ui_weak.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_copy.upgrade() {
@@ -261,7 +285,22 @@ fn attach_telemetry_stream(
 fn main() -> Result<(), slint::PlatformError> {
     let args: Vec<String> = env::args().collect();
 
-    // Headless CLI Repair Mode: kestrel-gui --repair <root_part> <os_id> <kernel> <bootloader> [efi_part]
+    // 1. Native Rust ALPM Guard Entrypoint (`kestrel-doctor` or `kestrel-gui --doctor`)
+    let invoked_as_doctor = args
+    .first()
+    .map(|s| s.ends_with("kestrel-doctor"))
+    .unwrap_or(false)
+    || args.iter().any(|a| a == "--doctor");
+
+    if invoked_as_doctor {
+        if let Err(e) = run_native_doctor() {
+            eprintln!("[Kestrel Doctor Fault] {}", e);
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
+    // 2. Headless CLI Repair Mode
     if args.len() >= 6 && args[1] == "--repair" {
         let bootloader = match args[5].as_str() {
             "systemd-boot" => BootloaderType::SystemdBoot,
@@ -297,6 +336,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     let ui = InstallerWindow::new()?;
+    let full_log_store: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
     let is_offline = Path::new("/opt/offline_cache").exists();
     ui.set_is_offline_cached(is_offline);
@@ -368,6 +408,31 @@ fn main() -> Result<(), slint::PlatformError> {
 
         ui.set_available_disks(ModelRc::from(Rc::new(VecModel::from(disks))));
 
+        // NON-BLOCKING ASYNC USB DIAGNOSTIC LOG EXPORT CALLBACK
+        let ui_handle_export = ui.as_weak();
+        let log_store_export = full_log_store.clone();
+        ui.global::<InstallerLogic>().on_export_logs(move || {
+            let ui_handle = ui_handle_export.clone();
+            let store_clone = log_store_export.clone();
+
+            thread::spawn(move || {
+                let content = store_clone.lock().unwrap().join("\n");
+                let msg = export_diagnostic_log(&content);
+                let updated_log = {
+                    let mut store = store_clone.lock().unwrap();
+                    store.push(format!("> [USB EXPORT] {}", msg));
+                    store.join("\n")
+                };
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_handle.upgrade() {
+                        ui.global::<InstallerLogic>().set_status_text(msg.into());
+                        ui.global::<InstallerLogic>()
+                        .set_console_log(updated_log.into());
+                    }
+                });
+            });
+        });
+
         let detected_targets_state: Arc<Mutex<Vec<ExistingInstall>>> = Arc::new(Mutex::new(Vec::new()));
 
         let ui_handle_repair_scan = ui.as_weak();
@@ -424,6 +489,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
         let ui_handle_repair_exec = ui.as_weak();
         let state_exec = detected_targets_state.clone();
+        let log_store_repair = full_log_store.clone();
         ui.global::<InstallerLogic>().on_start_repair(
             move |install_idx, kernel_choice, boot_choice, efi_part| {
                 let ui_handle = ui_handle_repair_exec.clone();
@@ -460,10 +526,14 @@ fn main() -> Result<(), slint::PlatformError> {
                 attach_telemetry_stream(
                     rx,
                     ui_handle,
-                    vec![
-                        format!("> Native Rust Repair Engine initialized on {}", target.partition),
-                            format!("> Kernel: {} | Bootloader: {:?}", kernel_choice, bootloader),
-                    ],
+                    log_store_repair.clone(),
+                                        vec![
+                                            format!(
+                                                "> Native Rust Repair Engine initialized on {}",
+                                                target.partition
+                                            ),
+                                        format!("> Kernel: {} | Bootloader: {:?}", kernel_choice, bootloader),
+                                        ],
                 );
 
                 thread::spawn(move || {
@@ -637,6 +707,7 @@ fn main() -> Result<(), slint::PlatformError> {
         });
 
         let ui_handle_install = ui.as_weak();
+        let log_store_install = full_log_store.clone();
         ui.global::<InstallerLogic>().on_start_install(
             move |target_disk,
             install_mode,
@@ -655,15 +726,24 @@ fn main() -> Result<(), slint::PlatformError> {
             selected_boot| {
                 let ui_handle = ui_handle_install.clone();
 
-                let (timezone, locale, keymap) = if let Some(ui) = ui_handle.upgrade() {
+                let (timezone, locale, keymap, greeter, greeter_variant) =
+                if let Some(ui) = ui_handle.upgrade() {
                     let logic = ui.global::<InstallerLogic>();
                     (
                         logic.get_selected_timezone().to_string(),
                      logic.get_selected_locale().to_string(),
                      logic.get_selected_keymap().to_string(),
+                     logic.get_selected_greeter().to_string(),
+                     logic.get_selected_greeter_variant().to_string(),
                     )
                 } else {
-                    ("UTC".into(), "en_US.UTF-8".into(), "us".into())
+                    (
+                        "UTC".into(),
+                     "en_US.UTF-8".into(),
+                     "us".into(),
+                     "SDDM".into(),
+                     "Default".into(),
+                    )
                 };
 
                 let pure_disk = target_disk
@@ -740,6 +820,8 @@ fn main() -> Result<(), slint::PlatformError> {
                                                        locale: locale.clone(),
                                                        keymap: keymap.clone(),
                                                        desktop_index: de_index,
+                                                       greeter: greeter.clone(),
+                                                       greeter_variant: greeter_variant.clone(),
                                                        browser_index,
                                                        bootloader,
                                                        hyper_performance: perf.as_str().starts_with('Y'),
@@ -750,17 +832,18 @@ fn main() -> Result<(), slint::PlatformError> {
                 attach_telemetry_stream(
                     rx,
                     ui_handle,
-                    vec![
-                        "> Kestrel Pure-Rust Provisioning Engine engaged.".into(),
+                    log_store_install.clone(),
+                                        vec![
+                                            "> Kestrel Pure-Rust Provisioning Engine engaged.".into(),
                                         format!(
                                             "> CPU: {} ({}) | Threads: {} | RAM: {} MB",
                                                 hw.cpu_vendor, hw.uarch_level, hw.cpu_threads, hw.total_ram_mb
                                         ),
                                         format!(
-                                            "> Regional: TZ={} | Locale={} | Keymap={}",
-                                            timezone, locale, keymap
+                                            "> Display Manager: {} ({}) | Regional: TZ={}, Locale={}, Keymap={}",
+                                                greeter, greeter_variant, timezone, locale, keymap
                                         ),
-                    ],
+                                        ],
                 );
 
                 thread::spawn(move || {

@@ -1,6 +1,7 @@
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
@@ -10,6 +11,10 @@ use sysinfo::System;
 
 #[cfg(target_os = "linux")]
 use nix::mount::{mount, umount2, MntFlags, MsFlags};
+#[cfg(target_os = "linux")]
+use nix::sched::{unshare, CloneFlags};
+#[cfg(target_os = "linux")]
+use nix::sys::stat::{umask, Mode};
 #[cfg(target_os = "linux")]
 use nix::unistd::{chdir, chroot, sync};
 #[cfg(target_os = "linux")]
@@ -59,6 +64,7 @@ pub struct HardwareTopology {
     pub is_rotational: bool,
     pub io_scheduler: String,
     pub has_nvidia: bool,
+    pub nvidia_turing_or_newer: bool,
     pub has_amd_gpu: bool,
     pub has_intel_gpu: bool,
 }
@@ -80,6 +86,8 @@ pub struct DeploymentManifest {
     pub locale: String,
     pub keymap: String,
     pub desktop_index: u8,
+    pub greeter: String,
+    pub greeter_variant: String,
     pub browser_index: u8,
     pub bootloader: BootloaderType,
     pub hyper_performance: bool,
@@ -140,6 +148,157 @@ impl DeploymentManifest {
     }
 }
 
+// ============================================================================
+// NATIVE RUST SELF-HEALING DOCTOR (NO BASH SCRIPT ESCAPE HATCH)
+// ============================================================================
+pub fn run_native_doctor() -> Result<(), String> {
+    let lock_path = Path::new("/var/lib/pacman/db.lck");
+    if lock_path.exists() {
+        let mut pacman_running = false;
+        if let Ok(proc_entries) = fs::read_dir("/proc") {
+            for entry in proc_entries.filter_map(|e| e.ok()) {
+                let comm_path = entry.path().join("comm");
+                if let Ok(comm) = fs::read_to_string(comm_path) {
+                    if comm.trim() == "pacman" {
+                        pacman_running = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !pacman_running {
+            println!("[Kestrel Doctor] Removing stale /var/lib/pacman/db.lck...");
+            let _ = fs::remove_file(lock_path);
+        }
+    }
+
+    let modules_dir = Path::new("/usr/lib/modules");
+    if let Ok(entries) = fs::read_dir(modules_dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let pkgbase_file = path.join("pkgbase");
+            if let Ok(pkgbase_raw) = fs::read_to_string(&pkgbase_file) {
+                let pkgbase = pkgbase_raw.trim();
+                if pkgbase.is_empty() {
+                    continue;
+                }
+                let vmlinuz_boot = PathBuf::from(format!("/boot/vmlinuz-{}", pkgbase));
+                let initramfs_boot = PathBuf::from(format!("/boot/initramfs-{}.img", pkgbase));
+
+                let vmlinuz_missing = !vmlinuz_boot.exists();
+                let initramfs_missing = fs::metadata(&initramfs_boot)
+                .map(|m| m.len() == 0)
+                .unwrap_or(true);
+
+                if vmlinuz_missing || initramfs_missing {
+                    println!(
+                        "[Kestrel Doctor] Missing or desynchronized boot image for '{}'. Rebuilding...",
+                        pkgbase
+                    );
+                    let src_vmlinuz = path.join("vmlinuz");
+                    if src_vmlinuz.exists() {
+                        let _ = fs::copy(&src_vmlinuz, &vmlinuz_boot);
+                    }
+                    let status = Command::new("mkinitcpio")
+                    .args(["-p", pkgbase])
+                    .status()
+                    .map_err(|e| format!("Failed invoking mkinitcpio: {}", e))?;
+                    if !status.success() {
+                        return Err(format!("mkinitcpio failed for preset {}", pkgbase));
+                    }
+                }
+            }
+        }
+    }
+    println!("[Kestrel Doctor] Kernel & initramfs boot integrity verified.");
+    Ok(())
+}
+
+// ============================================================================
+// USB & FLASH DRIVE LOG EXPORTER FOR USER DIAGNOSTICS
+// ============================================================================
+pub fn export_diagnostic_log(log_content: &str) -> String {
+    let mut saved_paths = Vec::new();
+
+    if fs::write("/root/kestrel-install.log", log_content).is_ok() {
+        saved_paths.push("/root/kestrel-install.log".to_string());
+    }
+    let _ = fs::write("/tmp/kestrel-install.log", log_content);
+
+    let candidate_dirs = [
+        "/run/archiso/bootmnt",
+        "/run/archiso/img_dev",
+        "/mnt/usb",
+    ];
+    for dir in candidate_dirs {
+        let p = Path::new(dir);
+        if p.exists() && p.is_dir() {
+            let _ = Command::new("mount")
+            .args(["-o", "remount,rw", dir])
+            .status();
+            let target_file = p.join("kestrel-install.log");
+            if fs::write(&target_file, log_content).is_ok() {
+                saved_paths.push(target_file.display().to_string());
+            }
+        }
+    }
+
+    if let Ok(out) = Command::new("lsblk")
+        .args(["-lno", "PATH,RM,FSTYPE,MOUNTPOINT"])
+        .output()
+        {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            for line in stdout.lines() {
+                let cols: Vec<&str> = line.split_whitespace().collect();
+                if cols.len() >= 3 {
+                    let dev = cols[0];
+                    let rm = cols[1];
+                    let fstype = cols[2];
+                    let mnt = cols.get(3).copied().unwrap_or("");
+
+                    if rm == "1" && matches!(fstype, "vfat" | "exfat" | "ntfs" | "ext4" | "btrfs") {
+                        if !mnt.is_empty() {
+                            let target_file = Path::new(mnt).join("kestrel-install.log");
+                            if fs::write(&target_file, log_content).is_ok() {
+                                saved_paths.push(target_file.display().to_string());
+                            }
+                        } else {
+                            let usb_mnt = Path::new("/tmp/kestrel_usb_export");
+                            let _ = fs::create_dir_all(usb_mnt);
+                            if Command::new("mount")
+                                .args([dev, "/tmp/kestrel_usb_export"])
+                                .status()
+                                .map(|s| s.success())
+                                .unwrap_or(false)
+                                {
+                                    let target_file = usb_mnt.join("kestrel-install.log");
+                                    if fs::write(&target_file, log_content).is_ok() {
+                                        saved_paths.push(format!("USB {} (kestrel-install.log)", dev));
+                                    }
+                                    let _ = Command::new("umount").arg(usb_mnt).status();
+                                }
+                        }
+                    }
+                }
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        sync();
+
+        if saved_paths.is_empty() {
+            "Saved to /tmp/kestrel-install.log".to_string()
+        } else {
+            format!("Exported log -> {}", saved_paths.join(" & "))
+        }
+}
+
+// ============================================================================
+// TRANSACTIONAL MOUNT GUARD
+// ============================================================================
 pub struct TransactionalGuard {
     target_root: PathBuf,
     mounted_paths: Vec<PathBuf>,
@@ -243,6 +402,9 @@ impl Drop for TransactionalGuard {
     }
 }
 
+// ============================================================================
+// HARDWARE TOPOLOGY & PCI ARCHITECTURE PROBER
+// ============================================================================
 pub fn probe_hardware_topology(disk_path: &str) -> HardwareTopology {
     let mut sys = System::new_all();
     sys.refresh_all();
@@ -251,13 +413,15 @@ pub fn probe_hardware_topology(disk_path: &str) -> HardwareTopology {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     let uarch_level = if std::arch::is_x86_feature_detected!("avx512f") {
         "x86-64-v4".to_string()
-    } else if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("bmi2") {
-        "x86-64-v3".to_string()
-    } else if std::arch::is_x86_feature_detected!("sse4.2") {
-        "x86-64-v2".to_string()
-    } else {
-        "x86-64-v1".to_string()
-    };
+    } else if std::arch::is_x86_feature_detected!("avx2")
+        && std::arch::is_x86_feature_detected!("bmi2")
+        {
+            "x86-64-v3".to_string()
+        } else if std::arch::is_x86_feature_detected!("sse4.2") {
+            "x86-64-v2".to_string()
+        } else {
+            "x86-64-v1".to_string()
+        };
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     let uarch_level = "generic".to_string();
 
@@ -300,6 +464,7 @@ pub fn probe_hardware_topology(disk_path: &str) -> HardwareTopology {
     .unwrap_or(false);
 
     let mut has_nvidia = false;
+    let mut nvidia_turing_or_newer = false;
     let mut has_amd_gpu = false;
     let mut has_intel_gpu = false;
 
@@ -307,9 +472,19 @@ pub fn probe_hardware_topology(disk_path: &str) -> HardwareTopology {
         for entry in pci_entries.filter_map(|e| e.ok()) {
             let cls = fs::read_to_string(entry.path().join("class")).unwrap_or_default();
             let vnd = fs::read_to_string(entry.path().join("vendor")).unwrap_or_default();
+            let dev_id_str = fs::read_to_string(entry.path().join("device")).unwrap_or_default();
             if cls.trim().starts_with("0x03") {
                 match vnd.trim() {
-                    "0x10de" => has_nvidia = true,
+                    "0x10de" => {
+                        has_nvidia = true;
+                        let clean_hex = dev_id_str.trim().trim_start_matches("0x");
+                        if let Ok(dev_id) = u32::from_str_radix(clean_hex, 16) {
+                            // NVIDIA Turing (TU10x/TU11x) and newer (Ampere, Ada, Blackwell) have PCI IDs >= 0x1e00
+                            if dev_id >= 0x1e00 {
+                                nvidia_turing_or_newer = true;
+                            }
+                        }
+                    }
                     "0x1002" => has_amd_gpu = true,
                     "0x8086" => has_intel_gpu = true,
                     _ => {}
@@ -333,6 +508,7 @@ pub fn probe_hardware_topology(disk_path: &str) -> HardwareTopology {
         is_rotational,
         io_scheduler,
         has_nvidia,
+        nvidia_turing_or_newer,
         has_amd_gpu,
         has_intel_gpu,
     }
@@ -390,6 +566,20 @@ fn run_host_cmd(
     .spawn()
     .map_err(|e| format!("Failed spawning {}: {}", program, e))?;
 
+    let stderr = child.stderr.take();
+    let tx_err = tx.clone();
+    let err_thread = thread::spawn(move || {
+        if let Some(err_pipe) = stderr {
+            let reader = BufReader::new(err_pipe);
+            for line in reader.lines().map_while(Result::ok) {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    let _ = tx_err.send(TelemetryEvent::Log(format!("> [stderr] {}", trimmed)));
+                }
+            }
+        }
+    });
+
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
         for line in reader.lines().map_while(Result::ok) {
@@ -400,6 +590,7 @@ fn run_host_cmd(
         }
     }
 
+    let _ = err_thread.join();
     let status = child
     .wait()
     .map_err(|e| format!("Failed waiting on {}: {}", program, e))?;
@@ -415,6 +606,7 @@ fn run_host_cmd(
     Ok(())
 }
 
+/// Executes a command inside an isolated mount namespace (`CLONE_NEWNS` + `MS_PRIVATE`) and `chroot` jail.
 fn run_in_chroot(
     tx: &Sender<TelemetryEvent>,
     root_dir: &Path,
@@ -430,6 +622,7 @@ fn run_in_chroot(
          "/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/bin/site_perl:/usr/bin/vendor_perl:/usr/bin/core_perl",
     )
     .env("HOME", "/root")
+    .env("LC_ALL", "C")
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
 
@@ -440,6 +633,19 @@ fn run_in_chroot(
     #[cfg(target_os = "linux")]
     unsafe {
         cmd.pre_exec(move || {
+            // 1. Detach mount namespace and enforce private mount propagation so child mounts cannot leak
+            if unshare(CloneFlags::CLONE_NEWNS).is_ok() {
+                let _ = mount(
+                    None::<&str>,
+                    Path::new("/"),
+                              None::<&str>,
+                              MsFlags::MS_REC | MsFlags::MS_PRIVATE,
+                              None::<&str>,
+                );
+            }
+            // 2. Sanitize file creation mask
+            umask(Mode::from_bits_truncate(0o022));
+            // 3. Enter chroot jail and immediately anchor working directory to "/"
             chroot(&root_owned).map_err(|e| io::Error::from_raw_os_error(e as i32))?;
             chdir("/").map_err(|e| io::Error::from_raw_os_error(e as i32))?;
             Ok(())
@@ -458,6 +664,20 @@ fn run_in_chroot(
         }
     }
 
+    let stderr = child.stderr.take();
+    let tx_err = tx.clone();
+    let err_thread = thread::spawn(move || {
+        if let Some(err_pipe) = stderr {
+            let reader = BufReader::new(err_pipe);
+            for line in reader.lines().map_while(Result::ok) {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    let _ = tx_err.send(TelemetryEvent::Log(format!("> {}", trimmed)));
+                }
+            }
+        }
+    });
+
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
         for line in reader.lines().map_while(Result::ok) {
@@ -468,6 +688,7 @@ fn run_in_chroot(
         }
     }
 
+    let _ = err_thread.join();
     let status = child
     .wait()
     .map_err(|e| format!("Chroot command {} failed to wait: {}", program, e))?;
@@ -654,13 +875,12 @@ fn provision_storage(
             let root_part = manifest.manual_root_partition.clone();
             let efi_part = manifest.manual_efi_partition.clone();
 
-            // GPARTED BTRFS FIX: Read the real superblock created in GParted!
             let existing_fs = detect_partition_fstype(&root_part);
             let active_fs = if matches!(existing_fs.as_str(), "btrfs" | "ext4" | "xfs" | "f2fs") {
                 send_log(
                     tx,
                     format!(
-                        "Detected existing '{}' filesystem on {} from GParted. Preserving format!",
+                        "Detected '{}' filesystem on {} from GParted. Preserving format!",
                         existing_fs, root_part
                     ),
                 );
@@ -717,7 +937,7 @@ fn provision_storage(
 
 fn build_package_list(
     manifest: &DeploymentManifest,
-) -> (Vec<String>, &'static str, &'static str, &'static str) {
+) -> (Vec<String>, String, &'static str, &'static str) {
     let (kernel_pkg, kernel_headers, vmlinuz, initramfs) = if manifest.hardware.uarch_level
     == "x86-64-v3"
     || manifest.hardware.uarch_level == "x86-64-v4"
@@ -820,7 +1040,6 @@ fn build_package_list(
         _ => pkgs.push("falkon".into()),
     }
 
-    let mut dm = "sddm";
     let de_pkgs: &[&str] = match manifest.desktop_index {
         1 => &[
             "hyprland",
@@ -831,7 +1050,6 @@ fn build_package_list(
             "polkit-kde-agent",
             "thunar",
             "gvfs",
-            "sddm",
         ],
         2 => &[
             "plasma-desktop",
@@ -845,13 +1063,9 @@ fn build_package_list(
             "kate",
             "spectacle",
             "sddm-kcm",
-            "sddm",
         ],
-        3 => &["xfce4", "xfce4-goodies", "xfce4-terminal", "sddm"],
-        4 => {
-            dm = "gdm";
-            &["gnome", "gnome-tweaks", "gdm"]
-        }
+        3 => &["xfce4", "xfce4-goodies", "xfce4-terminal"],
+        4 => &["gnome", "gnome-tweaks"],
         5 => &[
             "sway",
             "swaybg",
@@ -864,7 +1078,6 @@ fn build_package_list(
             "polkit-kde-agent",
             "thunar",
             "gvfs",
-            "sddm",
         ],
         6 => &[
             "i3-wm",
@@ -877,9 +1090,8 @@ fn build_package_list(
             "polkit-gnome",
             "thunar",
             "gvfs",
-            "sddm",
         ],
-        7 => &["cinnamon", "nemo-fileroller", "gnome-terminal", "sddm"],
+        7 => &["cinnamon", "nemo-fileroller", "gnome-terminal"],
         8 => &[
             "niri",
             "waybar",
@@ -889,7 +1101,6 @@ fn build_package_list(
             "polkit-kde-agent",
             "thunar",
             "gvfs",
-            "sddm",
         ],
         9 => &[
             "qtile",
@@ -899,7 +1110,6 @@ fn build_package_list(
             "polkit-kde-agent",
             "thunar",
             "gvfs",
-            "sddm",
         ],
         10 => &[
             "wayfire",
@@ -910,7 +1120,6 @@ fn build_package_list(
             "polkit-kde-agent",
             "thunar",
             "gvfs",
-            "sddm",
         ],
         11 => &[
             "bspwm",
@@ -922,19 +1131,63 @@ fn build_package_list(
             "polkit-gnome",
             "thunar",
             "gvfs",
-            "sddm",
         ],
-        12 => &["budgie-desktop", "sddm"],
-        13 => &["cosmic", "sddm"],
-        14 => &["lxde-common", "lxsession", "openbox", "sddm"],
-        15 => &["lxqt", "lxqt-session", "sddm"],
-        16 => &["mate", "mate-extra", "sddm"],
-        _ => &["openbox", "obconf", "tint2", "kitty", "dmenu", "feh", "sddm"],
+        12 => &["budgie-desktop"],
+        13 => &["cosmic"],
+        14 => &["lxde-common", "lxsession", "openbox"],
+        15 => &["lxqt", "lxqt-session"],
+        16 => &["mate", "mate-extra"],
+        _ => &["openbox", "obconf", "tint2", "kitty", "dmenu", "feh"],
     };
 
     for p in de_pkgs {
         pkgs.push((*p).to_string());
     }
+
+    // Greeter & Variant Package Resolution
+    let dm_service = if manifest.mode == InstallMode::Offline {
+        pkgs.push("sddm".into());
+        "sddm.service".to_string()
+    } else {
+        match manifest.greeter.as_str() {
+            "LightDM" => {
+                pkgs.push("lightdm".into());
+                pkgs.push("xorg-server".into());
+                if manifest.greeter_variant.contains("mini") {
+                    pkgs.push("lightdm-mini-greeter".into());
+                    pkgs.push("lightdm-gtk-greeter".into());
+                } else {
+                    pkgs.push("lightdm-slick-greeter".into());
+                }
+                "lightdm.service".to_string()
+            }
+            "Ly" => {
+                pkgs.push("ly".into());
+                "ly.service".to_string()
+            }
+            "greetd" => {
+                pkgs.push("greetd".into());
+                if manifest.greeter_variant.contains("gtkgreet")
+                    || manifest.greeter_variant.contains("wlgreet")
+                    {
+                        pkgs.push("greetd-gtkgreet".into());
+                        pkgs.push("wlgreet".into());
+                        pkgs.push("cage".into());
+                    } else {
+                        pkgs.push("greetd-tuigreet".into());
+                    }
+                    "greetd.service".to_string()
+            }
+            "GDM" => {
+                pkgs.push("gdm".into());
+                "gdm.service".to_string()
+            }
+            _ => {
+                pkgs.push("sddm".into());
+                "sddm.service".to_string()
+            }
+        }
+    };
 
     match manifest.bootloader {
         BootloaderType::Grub => pkgs.push("grub".into()),
@@ -943,17 +1196,21 @@ fn build_package_list(
         BootloaderType::Limine => pkgs.push("limine".into()),
     }
 
-    (pkgs, dm, vmlinuz, initramfs)
+    (pkgs, dm_service, vmlinuz, initramfs)
 }
 
-fn initialize_live_repos(tx: &Sender<TelemetryEvent>, mode: InstallMode) {
+pub fn initialize_live_repos(tx: &Sender<TelemetryEvent>, mode: InstallMode) {
     if mode == InstallMode::Online {
         send_log(tx, "Syncing Arch & Chaotic-AUR package databases...");
+        let _ = fs::remove_file("/var/lib/pacman/db.lck");
         let _ = Command::new("timedatectl").args(["set-ntp", "true"]).status();
+
         if Command::new("reflector")
             .args([
                 "--latest",
                 "10",
+                "--protocol",
+                "https",
                 "--sort",
                 "rate",
                 "--save",
@@ -972,7 +1229,12 @@ fn initialize_live_repos(tx: &Sender<TelemetryEvent>, mode: InstallMode) {
             let _ = Command::new("pacman-key").arg("--init").status();
             let _ = Command::new("pacman-key").args(["--populate", "archlinux"]).status();
             let _ = Command::new("pacman-key")
-            .args(["--recv-key", "3056513887B78AEB", "--keyserver", "hkps://keyserver.ubuntu.com"])
+            .args([
+                "--recv-key",
+                "3056513887B78AEB",
+                "--keyserver",
+                "hkps://keyserver.ubuntu.com",
+            ])
             .status();
             let _ = Command::new("pacman-key")
             .args(["--lsign-key", "3056513887B78AEB"])
@@ -987,10 +1249,11 @@ fn initialize_live_repos(tx: &Sender<TelemetryEvent>, mode: InstallMode) {
             .status();
 
             if let Ok(mut conf) = fs::read_to_string("/etc/pacman.conf") {
+                conf = conf.replace("#ParallelDownloads = 5", "ParallelDownloads = 10");
                 if !conf.contains("[chaotic-aur]") {
                     conf.push_str("\n[chaotic-aur]\nSigLevel = Optional TrustAll\nInclude = /etc/pacman.d/chaotic-mirrorlist\n");
-                    let _ = fs::write("/etc/pacman.conf", conf);
                 }
+                let _ = fs::write("/etc/pacman.conf", conf);
             }
             let _ = Command::new("pacman").args(["-Sy", "--noconfirm"]).status();
     }
@@ -998,6 +1261,7 @@ fn initialize_live_repos(tx: &Sender<TelemetryEvent>, mode: InstallMode) {
 
 fn execute_pacstrap_stream(
     tx: &Sender<TelemetryEvent>,
+    target_dir: &str,
     mode: InstallMode,
     packages: &[String],
 ) -> Result<(), String> {
@@ -1035,6 +1299,23 @@ fn execute_pacstrap_stream(
             .unwrap_or(false);
             if ok {
                 validated.push(pkg.clone());
+            } else if pkg == "linux-cachyos" || pkg == "linux-cachyos-headers" {
+                // Fallback to standard linux if chaotic-aur mirror is unreachable
+                send_log(
+                    tx,
+                    format!(
+                        "Chaotic-AUR package '{}' unreachable; falling back to mainline Arch kernel...",
+                        pkg
+                    ),
+                );
+                let fallback = if pkg.ends_with("-headers") {
+                    "linux-headers"
+                } else {
+                    "linux"
+                };
+                if !validated.contains(&fallback.to_string()) {
+                    validated.push(fallback.to_string());
+                }
             }
         }
     }
@@ -1044,17 +1325,20 @@ fn execute_pacstrap_stream(
         fs::write("/tmp/offline-pacman.conf", offline_conf)
         .map_err(|e| format!("Failed writing offline pacman.conf: {}", e))?;
 
-        let mut args = vec!["-C", "/tmp/offline-pacman.conf", "-K", "/mnt", "--noconfirm"];
+        let mut args = vec!["-C", "/tmp/offline-pacman.conf", "-K", target_dir, "--noconfirm"];
         let pkg_refs: Vec<&str> = validated.iter().map(|s| s.as_str()).collect();
         args.extend(pkg_refs);
 
         run_pacstrap_with_progress(tx, &args)?;
-        let _ = fs::copy("/etc/pacman.conf", "/mnt/etc/pacman.conf");
+        let _ = fs::copy("/etc/pacman.conf", format!("{}/etc/pacman.conf", target_dir));
         Ok(())
     } else {
         for attempt in 1..=3 {
-            let _ = fs::remove_file("/mnt/var/lib/pacman/db.lck");
-            let mut args = vec!["-K", "/mnt", "--noconfirm"];
+            let _ = fs::remove_file(format!("{}/var/lib/pacman/db.lck", target_dir));
+            let _ = fs::remove_file("/var/lib/pacman/db.lck");
+
+            // Use -G -M on repair roots or when host keys are already initialized to avoid gpg homedir hangs
+            let mut args = vec!["-K", target_dir, "--noconfirm", "--needed"];
             let pkg_refs: Vec<&str> = validated.iter().map(|s| s.as_str()).collect();
             args.extend(pkg_refs);
 
@@ -1078,54 +1362,166 @@ fn execute_pacstrap_stream(
                 "/etc/pacman.d/mirrorlist",
             ])
             .status();
+            let _ = Command::new("pacman").args(["-Syy", "--noconfirm"]).status();
             thread::sleep(Duration::from_secs(3));
         }
         Err("Online pacstrap failed after 3 attempts.".into())
     }
 }
 
+/// Regex-driven pacstrap progress parser that tracks every download, install, and hook step without flooding the UI.
 fn run_pacstrap_with_progress(
     tx: &Sender<TelemetryEvent>,
     args: &[&str],
 ) -> Result<(), String> {
     let mut child = Command::new("pacstrap")
     .args(args)
+    .env("LC_ALL", "C")
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
     .spawn()
     .map_err(|e| format!("Failed spawning pacstrap: {}", e))?;
 
-    if let Some(stdout) = child.stdout.take() {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(Result::ok) {
-            let clean = line.trim();
-            if clean.is_empty() {
-                continue;
+    let stderr = child.stderr.take();
+    let tx_err = tx.clone();
+    let err_thread = thread::spawn(move || {
+        if let Some(err_pipe) = stderr {
+            let reader = BufReader::new(err_pipe);
+            for line in reader.lines().map_while(Result::ok) {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    let _ = tx_err.send(TelemetryEvent::Log(format!("> [pacman] {}", trimmed)));
+                }
             }
-            if clean.starts_with('(') && clean.contains('/') && clean.contains(')') {
-                if let Some(bracket) = clean.split(')').next() {
-                    let nums: String = bracket
-                    .chars()
-                    .filter(|c| c.is_ascii_digit() || *c == '/')
-                    .collect();
-                    let parts: Vec<&str> = nums.split('/').collect();
-                    if parts.len() == 2 {
-                        if let (Ok(cur), Ok(tot)) =
-                            (parts[0].parse::<f32>(), parts[1].parse::<f32>())
+        }
+    });
+
+    let re_pkg_total = Regex::new(r"Packages\s+\((\d+)\)").unwrap();
+    let re_downloading = Regex::new(r"^(\S+)\s+downloading\.\.\.").unwrap();
+    let re_step = Regex::new(r"^\((\d+)/(\d+)\)\s+(.+)$").unwrap();
+
+    if let Some(mut stdout) = child.stdout.take() {
+        let mut buf = [0u8; 256];
+        let mut line_buf = String::new();
+        let mut total_pkgs: f32 = 0.0;
+        let mut downloaded_pkgs: f32 = 0.0;
+        let mut skip_pkg_wall = false;
+
+        while let Ok(n) = stdout.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            let chunk = String::from_utf8_lossy(&buf[..n]);
+            for ch in chunk.chars() {
+                if ch == '\n' || ch == '\r' {
+                    let clean = line_buf.trim().to_string();
+                    line_buf.clear();
+                    if clean.is_empty() {
+                        skip_pkg_wall = false;
+                        continue;
+                    }
+
+                    // 1. Detect "Packages (142)" header and suppress the giant wrapped package wall
+                    if let Some(caps) = re_pkg_total.captures(&clean) {
+                        if let Some(m) = caps.get(1) {
+                            total_pkgs = m.as_str().parse::<f32>().unwrap_or(100.0);
+                            let msg = format!(
+                                "Resolved {} target packages for deployment.",
+                                total_pkgs as u32
+                            );
+                            let _ = tx.send(TelemetryEvent::Status(msg.clone()));
+                            let _ = tx.send(TelemetryEvent::Log(format!("> {}", msg)));
+                            skip_pkg_wall = true;
+                            continue;
+                        }
+                    }
+
+                    if skip_pkg_wall {
+                        if clean.starts_with("Total ") || clean.starts_with("::") {
+                            skip_pkg_wall = false;
+                        } else {
+                            continue;
+                        }
+                    }
+
+                    // 2. Track individual package downloads in Status bar and log milestones every 10 packages
+                    if let Some(caps) = re_downloading.captures(&clean) {
+                        let pkg_name = caps.get(1).map(|m| m.as_str()).unwrap_or("package");
+                        if matches!(pkg_name, "core" | "extra" | "multilib" | "chaotic-aur")
+                            || pkg_name.ends_with(".db")
                             {
-                                if tot > 0.0 {
-                                    let _ = tx.send(TelemetryEvent::Progress(0.25 + 0.50 * (cur / tot)));
+                                let msg = format!("Synchronizing repository database: {}...", pkg_name);
+                                let _ = tx.send(TelemetryEvent::Status(msg.clone()));
+                                let _ = tx.send(TelemetryEvent::Log(format!("> {}", msg)));
+                            } else {
+                                downloaded_pkgs += 1.0;
+                                let ratio = if total_pkgs > 0.0 {
+                                    (downloaded_pkgs / total_pkgs).min(1.0)
+                                } else {
+                                    0.5
+                                };
+                                let _ = tx.send(TelemetryEvent::Progress(0.20 + 0.30 * ratio));
+                                let tot_disp = total_pkgs.max(downloaded_pkgs) as u32;
+                                let cur_disp = downloaded_pkgs as u32;
+                                let dl_status = format!(
+                                    "Downloading package ({}/{}): {}",
+                                                        cur_disp, tot_disp, pkg_name
+                                );
+                                let _ = tx.send(TelemetryEvent::Status(dl_status.clone()));
+                                if cur_disp == 1 || cur_disp % 10 == 0 || cur_disp == tot_disp {
+                                    let _ = tx.send(TelemetryEvent::Log(format!("> {}", dl_status)));
                                 }
                             }
+                            continue;
                     }
+
+                    // 3. Track ALL (x/y) installation, group creation, and post-transaction hook steps
+                    if let Some(caps) = re_step.captures(&clean) {
+                        let cur: f32 = caps
+                        .get(1)
+                        .and_then(|m| m.as_str().parse().ok())
+                        .unwrap_or(1.0);
+                        let tot: f32 = caps
+                        .get(2)
+                        .and_then(|m| m.as_str().parse().ok())
+                        .unwrap_or(1.0);
+                        let action_desc = caps.get(3).map(|m| m.as_str()).unwrap_or("processing");
+
+                        if tot > 0.0 {
+                            let _ = tx.send(TelemetryEvent::Progress(0.50 + 0.28 * (cur / tot)));
+                        }
+                        let status_line =
+                        format!("({}/{}) {}", cur as u32, tot as u32, action_desc);
+                        let _ = tx.send(TelemetryEvent::Status(status_line.clone()));
+
+                        let cur_u = cur as u32;
+                        let tot_u = tot as u32;
+                        if !action_desc.starts_with("checking ")
+                            && !action_desc.starts_with("loading ")
+                            || cur_u == tot_u
+                            {
+                                let _ = tx.send(TelemetryEvent::Log(format!("> {}", status_line)));
+                            }
+                            continue;
+                    }
+
+                    // 4. Section headers (:: Retrieving packages..., :: Running post-transaction hooks...)
+                    if clean.starts_with("::")
+                        || clean.starts_with("==>")
+                        || clean.starts_with("Total ")
+                        || clean.starts_with("Creating ")
+                        {
+                            let _ = tx.send(TelemetryEvent::Status(clean.clone()));
+                            let _ = tx.send(TelemetryEvent::Log(format!("> {}", clean)));
+                        }
+                } else if !ch.is_control() {
+                    line_buf.push(ch);
                 }
-                let _ = tx.send(TelemetryEvent::Status(clean.to_string()));
-            } else {
-                let _ = tx.send(TelemetryEvent::Log(format!("> {}", clean)));
             }
         }
     }
 
+    let _ = err_thread.join();
     let status = child
     .wait()
     .map_err(|e| format!("Failed waiting on pacstrap: {}", e))?;
@@ -1167,50 +1563,80 @@ root_uuid, root_fs, root_opts
     .map_err(|e| format!("Failed writing /mnt/etc/fstab: {}", e))
 }
 
+/// Installs the compiled standalone Rust `kestrel-doctor` ELF binary into `/usr/local/bin/kestrel-doctor` (Zero Bash scripts!).
 pub fn install_self_healing_alpm_guard(target_root: &Path) -> Result<(), String> {
     let bin_dir = target_root.join("usr/local/bin");
     let hook_dir = target_root.join("etc/pacman.d/hooks");
     fs::create_dir_all(&bin_dir).map_err(|e| e.to_string())?;
     fs::create_dir_all(&hook_dir).map_err(|e| e.to_string())?;
 
-    let doctor_script = r#"#!/usr/bin/env bash
-    set -euo pipefail
-    if [[ $EUID -ne 0 ]]; then exec sudo bash "$0" "$@"; fi
-        if [[ -f /var/lib/pacman/db.lck ]] && ! pgrep -x pacman >/dev/null; then
-            rm -f /var/lib/pacman/db.lck
-            fi
-            for kver_dir in /usr/lib/modules/*; do
-                [[ -d "$kver_dir" ]] || continue
-                if [[ -f "${kver_dir}/pkgbase" ]]; then
-                    pkgbase=$(cat "${kver_dir}/pkgbase")
-                    if [[ ! -f "/boot/vmlinuz-${pkgbase}" ]] || [[ ! -s "/boot/initramfs-${pkgbase}.img" ]]; then
-                        echo "[Kestrel Guard] Rebuilding missing boot image for ${pkgbase}..."
-                        cp -f "${kver_dir}/vmlinuz" "/boot/vmlinuz-${pkgbase}" 2>/dev/null || true
-                        mkinitcpio -p "${pkgbase}"
-                        fi
-                        fi
-                        done
-                        "#;
+    let doctor_dest = bin_dir.join("kestrel-doctor");
+    let standalone_doctor = Path::new("/usr/local/bin/kestrel-doctor");
 
-                        let doctor_path = bin_dir.join("kestrel-doctor");
-                        fs::write(&doctor_path, doctor_script).map_err(|e| e.to_string())?;
-                        #[cfg(target_os = "linux")]
-                        fs::set_permissions(&doctor_path, fs::Permissions::from_mode(0o755))
-                        .map_err(|e| e.to_string())?;
+    if standalone_doctor.exists() {
+        fs::copy(standalone_doctor, &doctor_dest)
+        .map_err(|e| format!("Failed copying standalone kestrel-doctor binary: {}", e))?;
+    } else if let Ok(self_exe) = std::env::current_exe() {
+        fs::copy(&self_exe, &doctor_dest)
+        .map_err(|e| format!("Failed installing kestrel-doctor binary: {}", e))?;
+    }
 
-                        let hook_content = r#"[Trigger]
-                        Operation = Install
-                        Operation = Upgrade
-                        Type = Path
-                        Target = usr/lib/modules/*/vmlinuz
+    #[cfg(target_os = "linux")]
+    if doctor_dest.exists() {
+        fs::set_permissions(&doctor_dest, fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
+    }
 
-                        [Action]
-                        Description = [Kestrel Guard] Verifying kernel & initramfs boot integrity...
-                        When = PostTransaction
-                        Exec = /usr/local/bin/kestrel-doctor
-                        "#;
-                        fs::write(hook_dir.join("99-kestrel-guard.hook"), hook_content).map_err(|e| e.to_string())?;
-                        Ok(())
+    let hook_content = "\
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Path
+Target = usr/lib/modules/*/vmlinuz
+
+[Action]
+Description = [Kestrel Guard] Verifying kernel & initramfs boot integrity (Native Rust)...
+When = PostTransaction
+Exec = /usr/local/bin/kestrel-doctor --doctor
+";
+fs::write(hook_dir.join("99-kestrel-guard.hook"), hook_content).map_err(|e| e.to_string())?;
+Ok(())
+}
+
+fn configure_greeter_files(manifest: &DeploymentManifest, mnt: &Path) {
+    if manifest.greeter == "LightDM" {
+        let lightdm_dir = mnt.join("etc/lightdm");
+        fs::create_dir_all(&lightdm_dir).ok();
+        let session = if manifest.greeter_variant.contains("mini") {
+            "lightdm-mini-greeter"
+        } else {
+            "lightdm-slick-greeter"
+        };
+        let conf = format!(
+            "[LightDM]\nrun-directory=/run/lightdm\n\n[Seat:*]\ngreeter-session={}\nuser-session=default\n",
+            session
+        );
+        let _ = fs::write(lightdm_dir.join("lightdm.conf"), conf);
+    } else if manifest.greeter == "greetd" {
+        let greetd_dir = mnt.join("etc/greetd");
+        fs::create_dir_all(&greetd_dir).ok();
+        let cmd_str = if manifest.greeter_variant.contains("gtkgreet")
+        || manifest.greeter_variant.contains("wlgreet")
+        {
+            "cage -s -- gtkgreet -l"
+        } else {
+            "tuigreet --time --remember --remember-session --asterisks"
+        };
+        let conf = format!(
+            "[terminal]\nvt = 1\n\n[default_session]\ncommand = \"{}\"\nuser = \"greeter\"\n",
+            cmd_str
+        );
+        let _ = fs::write(greetd_dir.join("config.toml"), conf);
+        let _ = fs::write(
+            greetd_dir.join("environments"),
+                          "Hyprland\nsway\nniri-session\nwayfire\nbash\n",
+        );
+    }
 }
 
 fn configure_target_system_in_chroot(
@@ -1242,6 +1668,26 @@ fn configure_target_system_in_chroot(
         manifest.hostname, manifest.hostname
     );
     fs::write(mnt.join("etc/hosts"), hosts).map_err(|e| e.to_string())?;
+
+    // WAYLAND VM & NVIDIA CURSOR FIX (Sway / Hyprland / Wlroots / KWin)
+    if manifest.hardware.is_vm || manifest.hardware.has_nvidia {
+        send_log(
+            tx,
+            "Applying Wayland software cursor environment rules for VM/NVIDIA compatibility...",
+        );
+        let mut env_file = fs::read_to_string(mnt.join("etc/environment")).unwrap_or_default();
+        env_file.push_str(
+            "\nWLR_NO_HARDWARE_CURSORS=1\nWLR_RENDERER_ALLOW_SOFTWARE=1\nKWIN_FORCE_SW_CURSOR=1\n",
+        );
+        let _ = fs::write(mnt.join("etc/environment"), env_file);
+
+        let prof_dir = mnt.join("etc/profile.d");
+        fs::create_dir_all(&prof_dir).ok();
+        let _ = fs::write(
+            prof_dir.join("kestrel-wayland-cursor.sh"),
+                          "export WLR_NO_HARDWARE_CURSORS=1\nexport WLR_RENDERER_ALLOW_SOFTWARE=1\nexport KWIN_FORCE_SW_CURSOR=1\n",
+        );
+    }
 
     send_log(
         tx,
@@ -1296,7 +1742,10 @@ manifest.keymap
 
     send_log(
         tx,
-        format!("Creating user '{}' and wheel sudoers policy...", manifest.username),
+        format!(
+            "Creating user '{}' and wheel sudoers policy...",
+            manifest.username
+        ),
     );
     let _ = run_in_chroot(
         tx,
@@ -1372,18 +1821,26 @@ PS1='\\[\\e[1;36m\\]\\u@\\h\\[\\e[0m\\]:\\[\\e[1;34m\\]\\w\\[\\e[0m\\]\\$ '\n",
     );
     let _ = fs::write(udev_dir.join("60-kestrel-iosched.rules"), iosched_rule);
 
+    // NVIDIA Architecture-Aware Dynamic Power Management (0x02 strictly on Turing+ >= 0x1e00)
     if manifest.hardware.has_nvidia
         && (manifest.hardware.has_amd_gpu || manifest.hardware.has_intel_gpu)
         {
             let modprobe_dir = mnt.join("etc/modprobe.d");
             fs::create_dir_all(&modprobe_dir).ok();
+            let pm_mode = if manifest.hardware.nvidia_turing_or_newer {
+                "0x02"
+            } else {
+                "0x01"
+            };
             let _ = fs::write(
                 modprobe_dir.join("nvidia.conf"),
-                              "options nvidia \"NVreg_DynamicPowerManagement=0x02\"\n",
+                              format!("options nvidia \"NVreg_DynamicPowerManagement={}\"\n", pm_mode),
             );
-            let nvidia_udev = "ACTION==\"add\", SUBSYSTEM==\"pci\", ATTR{vendor}==\"0x10de\", ATTR{class}==\"0x030000\", ATTR{power/control}=\"auto\"\n\
+            if manifest.hardware.nvidia_turing_or_newer {
+                let nvidia_udev = "ACTION==\"add\", SUBSYSTEM==\"pci\", ATTR{vendor}==\"0x10de\", ATTR{class}==\"0x030000\", ATTR{power/control}=\"auto\"\n\
 ACTION==\"add\", SUBSYSTEM==\"pci\", ATTR{vendor}==\"0x10de\", ATTR{class}==\"0x040300\", ATTR{power/control}=\"auto\"\n";
-            let _ = fs::write(udev_dir.join("80-nvidia-pm.rules"), nvidia_udev);
+                let _ = fs::write(udev_dir.join("80-nvidia-pm.rules"), nvidia_udev);
+            }
         }
 
         if manifest.hyper_performance {
@@ -1408,8 +1865,16 @@ ACTION==\"add\", SUBSYSTEM==\"pci\", ATTR{vendor}==\"0x10de\", ATTR{class}==\"0x
             }
         }
 
+        configure_greeter_files(manifest, mnt);
         install_self_healing_alpm_guard(mnt)?;
 
+        send_log(
+            tx,
+            format!(
+                "Enabling display manager ({}) and system services...",
+                    display_manager
+            ),
+        );
         for svc in [
             display_manager,
             "NetworkManager.service",
@@ -1468,6 +1933,18 @@ fn deploy_bootloader(
         ""
     };
 
+    // Detect actual installed kernel on target root in case of fallback
+    let actual_vmlinuz = if mnt.join("boot").join(vmlinuz).exists() {
+        vmlinuz
+    } else {
+        "vmlinuz-linux"
+    };
+    let actual_initramfs = if mnt.join("boot").join(initramfs).exists() {
+        initramfs
+    } else {
+        "initramfs-linux.img"
+    };
+
     send_log(
         tx,
         format!("Deploying {:?} bootloader configuration...", manifest.bootloader),
@@ -1519,13 +1996,13 @@ fn deploy_bootloader(
             )
             .map_err(|e| e.to_string())?;
 
-            let mut entry = format!("title   Kestrel Arch\nlinux   /{}\n", vmlinuz);
+            let mut entry = format!("title   Kestrel Arch\nlinux   /{}\n", actual_vmlinuz);
             if let Some(u) = ucode {
                 entry.push_str(&format!("initrd  /{}\n", u));
             }
             entry.push_str(&format!(
                 "initrd  /{}\noptions root=UUID={} rw nowatchdog zswap.enabled=0 quiet splash mitigations=off{}\n",
-                initramfs, root_uuid, nvidia_arg
+                actual_initramfs, root_uuid, nvidia_arg
             ));
             fs::write(entries_dir.join("arch.conf"), entry).map_err(|e| e.to_string())?;
         }
@@ -1535,7 +2012,7 @@ fn deploy_bootloader(
             let ucode_opt = ucode.map(|u| format!("initrd={} ", u)).unwrap_or_default();
             let conf = format!(
                 "\"Boot using default options\" \"root=UUID={} rw {}initrd={} nowatchdog zswap.enabled=0 quiet splash mitigations=off{}\"\n",
-                root_uuid, ucode_opt, initramfs, nvidia_arg
+                root_uuid, ucode_opt, actual_initramfs, nvidia_arg
             );
             fs::write(mnt.join("boot/refind_linux.conf"), conf).map_err(|e| e.to_string())?;
         }
@@ -1543,14 +2020,14 @@ fn deploy_bootloader(
         BootloaderType::Limine => {
             let mut limine_cfg = format!(
                 "timeout: 5\ndefault_entry: 1\n\n/Kestrel Arch\n    protocol: linux\n    path: boot():/{}\n",
-                                         vmlinuz
+                                         actual_vmlinuz
             );
             if let Some(u) = ucode {
                 limine_cfg.push_str(&format!("    module_path: boot():/{}\n", u));
             }
             limine_cfg.push_str(&format!(
                 "    module_path: boot():/{}\n    cmdline: root=UUID={} rw nowatchdog zswap.enabled=0 quiet splash mitigations=off{}\n",
-                                         initramfs, root_uuid, nvidia_arg
+                                         actual_initramfs, root_uuid, nvidia_arg
             ));
 
             if manifest.hardware.is_uefi {
@@ -1623,20 +2100,20 @@ pub fn execute_deployment(manifest: DeploymentManifest, tx: Sender<TelemetryEven
         let (root_part, boot_part, active_fs) = provision_storage(&manifest, &mut guard, &tx)?;
 
         let _ = tx.send(TelemetryEvent::Progress(0.20));
-        let (pkgs, dm, vmlinuz, initramfs) = build_package_list(&manifest);
-        execute_pacstrap_stream(&tx, manifest.mode, &pkgs)?;
+        let (pkgs, dm_service, vmlinuz, initramfs) = build_package_list(&manifest);
+        execute_pacstrap_stream(&tx, "/mnt", manifest.mode, &pkgs)?;
 
-        let _ = tx.send(TelemetryEvent::Progress(0.78));
+        let _ = tx.send(TelemetryEvent::Progress(0.80));
         send_log(&tx, "Generating UUID-pinned /etc/fstab...");
         write_native_fstab(&root_part, &boot_part, &active_fs)?;
 
-        send_log(&tx, "Binding kernel virtual filesystems for native chroot...");
+        send_log(&tx, "Binding kernel virtual filesystems for isolated chroot...");
         guard.mount_chroot_api_vfs()?;
 
-        let _ = tx.send(TelemetryEvent::Progress(0.85));
-        configure_target_system_in_chroot(&manifest, dm, &tx)?;
+        let _ = tx.send(TelemetryEvent::Progress(0.86));
+        configure_target_system_in_chroot(&manifest, &dm_service, &tx)?;
 
-        let _ = tx.send(TelemetryEvent::Progress(0.92));
+        let _ = tx.send(TelemetryEvent::Progress(0.93));
         deploy_bootloader(&manifest, &root_part, vmlinuz, initramfs, &tx)?;
 
         guard.cleanup_all();
@@ -1664,7 +2141,7 @@ pub fn execute_repair(manifest: RepairManifest, tx: Sender<TelemetryEvent>) {
         let target_mnt = Path::new("/mnt/kestrel_repair");
         let mut guard = TransactionalGuard::new("/mnt/kestrel_repair");
 
-        let _ = tx.send(TelemetryEvent::Progress(0.15));
+        let _ = tx.send(TelemetryEvent::Progress(0.10));
         send_log(
             &tx,
             format!(
@@ -1713,7 +2190,7 @@ pub fn execute_repair(manifest: RepairManifest, tx: Sender<TelemetryEvent>) {
                 )?;
             }
 
-            let _ = tx.send(TelemetryEvent::Progress(0.40));
+            let _ = tx.send(TelemetryEvent::Progress(0.25));
             let kernel = if manifest.os_id == "cachyos" {
                 "linux-cachyos"
             } else {
@@ -1722,36 +2199,62 @@ pub fn execute_repair(manifest: RepairManifest, tx: Sender<TelemetryEvent>) {
             let headers = format!("{}-headers", kernel);
             send_log(&tx, format!("[2/5] Reinstalling {} and headers...", kernel));
 
-            run_host_cmd(
-                &tx,
-                "pacstrap",
-                &[
-                    "-K",
-                    "/mnt/kestrel_repair",
-                    "--noconfirm",
-                    kernel,
-                    &headers,
-                    "mkinitcpio",
-                ],
-            )?;
+            let has_net = Command::new("ping")
+            .args(["-c", "1", "-W", "2", "archlinux.org"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+            let repair_mode = if !has_net && Path::new("/opt/offline_cache").exists() {
+                InstallMode::Offline
+            } else {
+                InstallMode::Online
+            };
 
-            let _ = tx.send(TelemetryEvent::Progress(0.65));
+            let mut repair_pkgs = vec![kernel.to_string(), headers, "mkinitcpio".to_string()];
+            match manifest.bootloader {
+                BootloaderType::Grub => {
+                    repair_pkgs.push("grub".into());
+                    repair_pkgs.push("os-prober".into());
+                    if manifest.is_uefi {
+                        repair_pkgs.push("efibootmgr".into());
+                    }
+                }
+                BootloaderType::Limine => repair_pkgs.push("limine".into()),
+                BootloaderType::Refind => {
+                    repair_pkgs.push("refind".into());
+                    repair_pkgs.push("efibootmgr".into());
+                }
+                BootloaderType::SystemdBoot => {}
+            }
+
+            execute_pacstrap_stream(&tx, "/mnt/kestrel_repair", repair_mode, &repair_pkgs)?;
+
+            let _ = tx.send(TelemetryEvent::Progress(0.70));
             send_log(
                 &tx,
-                "[3/5] Installing Self-Healing ALPM Guard & binding chroot VFS...",
+                "[3/5] Installing Native Rust Self-Healing ALPM Guard & binding chroot VFS...",
             );
             install_self_healing_alpm_guard(target_mnt)?;
             guard.mount_chroot_api_vfs()?;
 
-            let _ = tx.send(TelemetryEvent::Progress(0.80));
+            let _ = tx.send(TelemetryEvent::Progress(0.82));
             send_log(&tx, "[4/5] Rebuilding initramfs images via mkinitcpio -P...");
             run_in_chroot(&tx, target_mnt, "mkinitcpio", &["-P"], None)?;
 
-            let _ = tx.send(TelemetryEvent::Progress(0.90));
+            let _ = tx.send(TelemetryEvent::Progress(0.92));
             send_log(
                 &tx,
                 format!("[5/5] Restoring {:?} bootloader...", manifest.bootloader),
             );
+
+            let actual_kernel = if target_mnt
+            .join(format!("boot/vmlinuz-{}", kernel))
+            .exists()
+            {
+                kernel
+            } else {
+                "linux"
+            };
 
             let root_uuid = get_partition_uuid(&manifest.target_partition)?;
             match manifest.bootloader {
@@ -1762,16 +2265,11 @@ pub fn execute_repair(manifest: RepairManifest, tx: Sender<TelemetryEvent>) {
                     fs::create_dir_all(&entries).ok();
                     let entry = format!(
                         "title   Arch Linux ({})\nlinux   /vmlinuz-{}\ninitrd  /initramfs-{}.img\noptions root=UUID={} rw quiet\n",
-                                        kernel, kernel, kernel, root_uuid
+                                        actual_kernel, actual_kernel, actual_kernel, root_uuid
                     );
                     fs::write(entries.join("arch.conf"), entry).map_err(|e| e.to_string())?;
                 }
                 BootloaderType::Grub => {
-                    run_host_cmd(
-                        &tx,
-                        "pacstrap",
-                        &["-K", "/mnt/kestrel_repair", "--noconfirm", "grub", "os-prober"],
-                    )?;
                     if manifest.is_uefi {
                         run_in_chroot(
                             &tx,
@@ -1785,6 +2283,27 @@ pub fn execute_repair(manifest: RepairManifest, tx: Sender<TelemetryEvent>) {
                             ],
                             None,
                         )?;
+                    } else {
+                        if let Ok(out) = Command::new("lsblk")
+                            .args(["-no", "PKNAME", &manifest.target_partition])
+                            .output()
+                            {
+                                let disk = String::from_utf8_lossy(&out.stdout)
+                                .lines()
+                                .next()
+                                .unwrap_or("")
+                                .trim()
+                                .to_string();
+                                if !disk.is_empty() {
+                                    let _ = run_in_chroot(
+                                        &tx,
+                                        target_mnt,
+                                        "grub-install",
+                                        &["--target=i386-pc", &format!("/dev/{}", disk), "--recheck"],
+                                                          None,
+                                    );
+                                }
+                            }
                     }
                     run_in_chroot(
                         &tx,
@@ -1795,11 +2314,6 @@ pub fn execute_repair(manifest: RepairManifest, tx: Sender<TelemetryEvent>) {
                     )?;
                 }
                 BootloaderType::Limine => {
-                    run_host_cmd(
-                        &tx,
-                        "pacstrap",
-                        &["-K", "/mnt/kestrel_repair", "--noconfirm", "limine"],
-                    )?;
                     if manifest.is_uefi {
                         let efi_boot = target_mnt.join("boot/EFI/BOOT");
                         fs::create_dir_all(&efi_boot).ok();
@@ -1808,13 +2322,13 @@ pub fn execute_repair(manifest: RepairManifest, tx: Sender<TelemetryEvent>) {
                                          efi_boot.join("BOOTX64.EFI"),
                         );
                     }
+                    let limine_cfg = format!(
+                        "timeout: 5\ndefault_entry: 1\n\n/Arch Linux ({})\n    protocol: linux\n    path: boot():/vmlinuz-{}\n    module_path: boot():/initramfs-{}.img\n    cmdline: root=UUID={} rw quiet\n",
+                                             actual_kernel, actual_kernel, actual_kernel, root_uuid
+                    );
+                    let _ = fs::write(target_mnt.join("boot/limine.conf"), limine_cfg);
                 }
                 BootloaderType::Refind => {
-                    run_host_cmd(
-                        &tx,
-                        "pacstrap",
-                        &["-K", "/mnt/kestrel_repair", "--noconfirm", "refind", "efibootmgr"],
-                    )?;
                     run_in_chroot(&tx, target_mnt, "refind-install", &[], None)?;
                 }
             }

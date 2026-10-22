@@ -42,8 +42,10 @@ jobs:
 
       - name: Install Build Dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libfontconfig1-dev libx11-dev libxkbcommon-dev libwayland-dev
+          sudo sed -i 's|http://ubuntu.com*|http://ubuntu.com|g' /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt 2>/dev/null || true
+          sudo apt-get -o Acquire::http::Timeout="15" -o Acquire::Retries="3" update
+          sudo apt-get -o Acquire::http::Timeout="15" -o Acquire::Retries="3" install -y --no-install-recommends \
+            libfontconfig1-dev libx11-dev libxkbcommon-dev libwayland-dev
 
       - name: Build Kestrel GUI (Release Mode)
         run: |
@@ -57,41 +59,44 @@ jobs:
         run: |
           mkdir -p /tmp/release_asset
           cp airootfs/gui-src/target/release/kestrel-gui /tmp/release_asset/kestrel-gui
+          cp airootfs/gui-src/target/release/kestrel-doctor /tmp/release_asset/kestrel-doctor
           chmod +x /tmp/release_asset/kestrel-gui
+          chmod +x /tmp/release_asset/kestrel-doctor
 
       - name: Publish to GitHub Releases with Automated Notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           RELEASE_TAG="latest-gui"
-          
+
           PREV_TAG=$(gh release view "$RELEASE_TAG" --json tagName -q .tagName 2>/dev/null || true)
           git config --global --add safe.directory '*' || true
-          
+
           if [ -n "$PREV_TAG" ] && git rev-parse "$PREV_TAG" >/dev/null 2>&1; then
             CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"- %s" -- airootfs/gui-src/ 2>/dev/null)
           else
             CHANGELOG=$(git log -5 --pretty=format:"- %s" -- airootfs/gui-src/ 2>/dev/null)
           fi
-          
+
           [ -z "$CHANGELOG" ] && CHANGELOG="- Minor updates and stability improvements."
-          
+
           {
             echo "### 🚀 What's Improved or Fixed"
             echo "$CHANGELOG"
             echo ""
             echo "---"
-            echo "*Automated build of the Kestrel Arch Slint GUI engine.*"
+            echo "*Automated build of the Kestrel Arch Slint GUI engine and Kestrel Doctor.*"
           } > release_notes.md
-          
+
           echo "=> Deleting old release to reset GitHub timestamp..."
           gh release delete "$RELEASE_TAG" -y 2>/dev/null || true
-          
+
           echo "=> Pushing fresh tag and creating new release..."
           git tag -f "$RELEASE_TAG"
           git push origin "$RELEASE_TAG" --force
-          
+
           gh release create "$RELEASE_TAG" \
             --title "Kestrel GUI - Latest Build" \
             --notes-file release_notes.md \
-            /tmp/release_asset/kestrel-gui
+            /tmp/release_asset/kestrel-gui \
+            /tmp/release_asset/kestrel-doctor

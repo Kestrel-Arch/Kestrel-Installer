@@ -3,21 +3,31 @@ name = "kestrel-gui"
 version = "0.2.0"
 edition = "2021"
 build = "build.rs"
+default-run = "kestrel-gui"
+
+[[bin]]
+name = "kestrel-gui"
+path = "src/main.rs"
+
+[[bin]]
+name = "kestrel-doctor"
+path = "src/bin/kestrel-doctor.rs"
 
 [dependencies]
 slint = "1.7.2"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 sysinfo = "0.31"
+regex = "1.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-nix = { version = "0.29", features = ["mount", "fs", "process", "user"] }
+nix = { version = "0.29", features = ["mount", "fs", "process", "user", "sched", "stat"] }
 
 [build-dependencies]
 slint-build = "1.7.2"
 
 # ==========================================
-# KESTREL COMPRESSION MATRIX
+# KESTREL EXTREME COMPRESSION MATRIX
 # ==========================================
 [profile.release]
 opt-level = "z"     # Optimize aggressively for binary size

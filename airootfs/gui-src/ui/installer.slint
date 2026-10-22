@@ -34,6 +34,7 @@ export global InstallerLogic {
     callback launch_gparted(string);
     callback fetch_partitions(string);
     callback close_installer();
+    callback export_logs();
 
     // REPAIR ENGINE CALLBACKS & MODELS
     callback scan_existing_installations();
@@ -61,6 +62,10 @@ export global InstallerLogic {
     in property <[string]> available_keymaps: [
         "us", "uk", "in", "de", "fr", "es", "ru", "jp", "dvorak", "colemak"
     ];
+
+    // DISPLAY MANAGER / GREETER & VARIANT PROPERTIES
+    in-out property <string> selected_greeter: "SDDM";
+    in-out property <string> selected_greeter_variant: "Default";
 
     in property <float> progress: 0.0;
     in property <string> status_text: "Ready to deploy.";
@@ -149,7 +154,7 @@ component RadioOption inherits Rectangle {
             alignment: center;
             spacing: 2px;
             Text { text: root.title; color: active ? #A5F3FC : #E5E7EB; font-size: 14px; font-weight: 700; }
-            Text { text: root.description; color: active ? #9CA3AF : #6B7280; font-size: 12px; }
+            Text { text: root.description; color: active ? #9CA3AF : #6B7280; font-size: 12px; wrap: word-wrap; }
         }
     }
 
@@ -394,6 +399,8 @@ export component InstallerWindow inherits Window {
                                 root.selected_mode = val;
                                 if (val == "2. Offline (Fast, Local Cache)") {
                                     root.selected_browser = root.falkon_label;
+                                    InstallerLogic.selected_greeter = "SDDM";
+                                    InstallerLogic.selected_greeter_variant = "Default";
                                 } else {
                                     root.selected_browser = "Zen Browser";
                                 }
@@ -877,7 +884,7 @@ export component InstallerWindow inherits Window {
                                 RadioOption { title: "1. Hyprland"; description: "Visually pleasing dynamic tiling Wayland compositor."; active: root.selected_de == "1. Hyprland"; clicked => { root.selected_de = "1. Hyprland"; } }
                                 RadioOption { title: "2. KDE Plasma 6"; description: "Comprehensive, flexible next-gen Wayland desktop environment."; active: root.selected_de == "2. KDE Plasma 6"; clicked => { root.selected_de = "2. KDE Plasma 6"; } }
                                 RadioOption { title: "3. XFCE 4.18+"; description: "Modernized, lightweight, and rock-solid traditional desktop layout."; active: root.selected_de == "3. XFCE 4.18+"; clicked => { root.selected_de = "3. XFCE 4.18+"; } }
-                                if (root.selected_mode != "2. Offline (Fast, Local Cache)") : RadioOption { title: "4. GNOME 46+"; description: "User-friendly environment with a modern, fluid touch layout."; active: root.selected_de == "4. GNOME 46+"; clicked => { root.selected_de = "4. GNOME 46+"; } }
+                                if (root.selected_mode != "2. Offline (Fast, Local Cache)") : RadioOption { title: "4. GNOME 46+"; description: "User-friendly environment with a modern, fluid touch layout."; active: root.selected_de == "4. GNOME 46+"; clicked => { root.selected_de = "4. GNOME 46+"; InstallerLogic.selected_greeter = "GDM"; } }
                                 if (root.selected_mode != "2. Offline (Fast, Local Cache)") : RadioOption { title: "5. Sway"; description: "Tiling Wayland compositor; dynamic drop-in i3 upgrade."; active: root.selected_de == "5. Sway"; clicked => { root.selected_de = "5. Sway"; } }
                                 if (root.selected_mode != "2. Offline (Fast, Local Cache)") : RadioOption { title: "6. i3-wm"; description: "Popular X11 tiling manager leveraging clean text configurations."; active: root.selected_de == "6. i3-wm"; clicked => { root.selected_de = "6. i3-wm"; } }
                                 if (root.selected_mode != "2. Offline (Fast, Local Cache)") : RadioOption { title: "7. Cinnamon"; description: "Traditional desktop paradigm balancing advanced internal features."; active: root.selected_de == "7. Cinnamon"; clicked => { root.selected_de = "7. Cinnamon"; } }
@@ -904,9 +911,152 @@ export component InstallerWindow inherits Window {
                                 if (root.selected_de == "Choose your environment") {
                                     root.error_message = "Please select a Desktop Environment before proceeding.";
                                     root.show_error_popup = true;
-                                } else { root.active_step = 52; }
+                                } else if (root.selected_mode == "2. Offline (Fast, Local Cache)") {
+                                    InstallerLogic.selected_greeter = "SDDM";
+                                    InstallerLogic.selected_greeter_variant = "Default";
+                                    root.active_step = 52;
+                                } else {
+                                    root.active_step = 510;
+                                }
                             }
                         }
+                    }
+                }
+
+                // =========================================================
+                // STEP 510: Display Manager (Greeter) Selection
+                // =========================================================
+                if (root.active_step == 510) : VerticalBox {
+                    alignment: center; spacing: 8px; padding-left: 35px; padding-right: 35px;
+                    Text { text: "Display Manager (Greeter) Selection"; font-size: 20px; font-weight: 700; color: #A5F3FC; horizontal-alignment: center; }
+                    Text { text: "Select the login manager for your desktop or window manager."; color: #9CA3AF; font-size: 12px; horizontal-alignment: center; }
+
+                    Rectangle {
+                        height: 270px; width: 100%; border-radius: 8px; border-width: 1px; border-color: #1F2937; background: #020617;
+                        ScrollView {
+                            width: 100%; height: 100%;
+                            VerticalBox {
+                                padding: 8px; spacing: 6px;
+
+                                RadioOption {
+                                    title: "SDDM";
+                                    description: "Modern QML/Qt6 display manager with first-class Wayland and KDE/Hyprland support.";
+                                    active: InstallerLogic.selected_greeter == "SDDM";
+                                    clicked => {
+                                        InstallerLogic.selected_greeter = "SDDM";
+                                        InstallerLogic.selected_greeter_variant = "Default";
+                                    }
+                                }
+                                RadioOption {
+                                    title: "LightDM";
+                                    description: "Lightweight, cross-desktop display manager supporting slick and minimalist greeter variants.";
+                                    active: InstallerLogic.selected_greeter == "LightDM";
+                                    clicked => {
+                                        InstallerLogic.selected_greeter = "LightDM";
+                                        InstallerLogic.selected_greeter_variant = "lightdm-slick-greeter";
+                                    }
+                                }
+                                RadioOption {
+                                    title: "greetd";
+                                    description: "Minimalist, agnostic login daemon supporting TUI (tuigreet) and Wayland (gtkgreet/wlgreet) frontends.";
+                                    active: InstallerLogic.selected_greeter == "greetd";
+                                    clicked => {
+                                        InstallerLogic.selected_greeter = "greetd";
+                                        InstallerLogic.selected_greeter_variant = "tuigreet";
+                                    }
+                                }
+                                RadioOption {
+                                    title: "Ly";
+                                    description: "Ultra-lightweight TUI (ncurses-like) console display manager engineered for speed and low memory.";
+                                    active: InstallerLogic.selected_greeter == "Ly";
+                                    clicked => {
+                                        InstallerLogic.selected_greeter = "Ly";
+                                        InstallerLogic.selected_greeter_variant = "Default";
+                                    }
+                                }
+                                RadioOption {
+                                    title: "GDM";
+                                    description: "Official GNOME Display Manager with deep Wayland and systemd session integration.";
+                                    active: InstallerLogic.selected_greeter == "GDM";
+                                    clicked => {
+                                        InstallerLogic.selected_greeter = "GDM";
+                                        InstallerLogic.selected_greeter_variant = "Default";
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalBox {
+                        alignment: center; spacing: 15px; padding-top: 10px;
+                        GlowingButton { text: "Back"; primary: false; clicked => { root.active_step = 51; } }
+                        GlowingButton {
+                            text: "Next Step"; primary: true;
+                            clicked => {
+                                if (InstallerLogic.selected_greeter == "LightDM" || InstallerLogic.selected_greeter == "greetd") {
+                                    root.active_step = 511;
+                                } else {
+                                    root.active_step = 52;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // =========================================================
+                // STEP 511: Dedicated Greeter Variant Window (LightDM / greetd)
+                // =========================================================
+                if (root.active_step == 511) : VerticalBox {
+                    alignment: center; spacing: 10px; padding-left: 40px; padding-right: 40px;
+                    Text {
+                        text: InstallerLogic.selected_greeter + " Greeter Variant";
+                        font-size: 20px; font-weight: 700; color: #A5F3FC; horizontal-alignment: center;
+                    }
+                    Text {
+                        text: "Select your preferred visual frontend for " + InstallerLogic.selected_greeter + ".";
+                        color: #9CA3AF; font-size: 12px; horizontal-alignment: center;
+                    }
+
+                    Rectangle {
+                        height: 210px; width: 100%; border-radius: 8px; border-width: 1px; border-color: #1F2937; background: #020617;
+                        ScrollView {
+                            width: 100%; height: 100%;
+                            VerticalBox {
+                                padding: 10px; spacing: 10px;
+
+                                if (InstallerLogic.selected_greeter == "LightDM") : RadioOption {
+                                    title: "lightdm-slick-greeter";
+                                    description: "Clean, professional, and looks like a high-end corporate OS out of the box. Highly recommended if you want a reliable mouse-driven UI without writing code.";
+                                    active: InstallerLogic.selected_greeter_variant == "lightdm-slick-greeter";
+                                    clicked => { InstallerLogic.selected_greeter_variant = "lightdm-slick-greeter"; }
+                                }
+                                if (InstallerLogic.selected_greeter == "LightDM") : RadioOption {
+                                    title: "lightdm-mini-greeter";
+                                    description: "An ultra-minimalist single-line login prompt centered on your wallpaper. Perfect if you just want to see your background image and a password prompt.";
+                                    active: InstallerLogic.selected_greeter_variant == "lightdm-mini-greeter";
+                                    clicked => { InstallerLogic.selected_greeter_variant = "lightdm-mini-greeter"; }
+                                }
+
+                                if (InstallerLogic.selected_greeter == "greetd") : RadioOption {
+                                    title: "tuigreet";
+                                    description: "The most popular frontend for greetd. It runs a gorgeous, retro-futuristic Text User Interface (TUI) right in your terminal (TTY).";
+                                    active: InstallerLogic.selected_greeter_variant == "tuigreet";
+                                    clicked => { InstallerLogic.selected_greeter_variant = "tuigreet"; }
+                                }
+                                if (InstallerLogic.selected_greeter == "greetd") : RadioOption {
+                                    title: "gtkgreet / wlgreet";
+                                    description: "Graphical frontends for greetd built specifically for Wayland environments like Sway or Hyprland.";
+                                    active: InstallerLogic.selected_greeter_variant == "gtkgreet / wlgreet";
+                                    clicked => { InstallerLogic.selected_greeter_variant = "gtkgreet / wlgreet"; }
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalBox {
+                        alignment: center; spacing: 15px; padding-top: 15px;
+                        GlowingButton { text: "Back"; primary: false; clicked => { root.active_step = 510; } }
+                        GlowingButton { text: "Next Step"; primary: true; clicked => { root.active_step = 52; } }
                     }
                 }
 
@@ -943,7 +1093,18 @@ export component InstallerWindow inherits Window {
 
                     HorizontalBox {
                         alignment: center; spacing: 15px; padding-top: 10px;
-                        GlowingButton { text: "Back"; primary: false; clicked => { root.active_step = 51; } }
+                        GlowingButton {
+                            text: "Back"; primary: false;
+                            clicked => {
+                                if (root.selected_mode == "2. Offline (Fast, Local Cache)") {
+                                    root.active_step = 51;
+                                } else if (InstallerLogic.selected_greeter == "LightDM" || InstallerLogic.selected_greeter == "greetd") {
+                                    root.active_step = 511;
+                                } else {
+                                    root.active_step = 510;
+                                }
+                            }
+                        }
 
                         GlowingButton {
                             text: "Initialize Protocol"; primary: true;
@@ -963,13 +1124,13 @@ export component InstallerWindow inherits Window {
                 }
 
                 // =========================================================
-                // STEP 6: Deployment Execution Screen
+                // STEP 6: Deployment Execution Screen (Scrollable + USB Export)
                 // =========================================================
                 if (root.active_step == 6) : VerticalBox {
-                    alignment: center; spacing: 15px; padding-left: 50px; padding-right: 50px;
+                    alignment: center; spacing: 12px; padding-left: 50px; padding-right: 50px;
                     Text { text: "DEPLOYING INFRASTRUCTURE"; font-size: 20px; font-weight: 800; color: #A5F3FC; horizontal-alignment: center; letter-spacing: 2px; }
                     ProgressIndicator { progress: InstallerLogic.progress; height: 22px; }
-                    Text { text: InstallerLogic.status_text; color: #9CA3AF; font-size: 14px; horizontal-alignment: center; }
+                    Text { text: InstallerLogic.status_text; color: #9CA3AF; font-size: 13px; horizontal-alignment: center; wrap: word-wrap; }
 
                     TouchArea {
                         mouse-cursor: pointer; height: 20px; clicked => { root.show_console = !root.show_console; }
@@ -980,30 +1141,32 @@ export component InstallerWindow inherits Window {
                     }
 
                     if (root.show_console) : Rectangle {
-                        background: #000000; border-radius: 8px; border-width: 1px; border-color: #1F2937; height: 220px; width: 100%; clip: true;
+                        background: #000000;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: #1F2937;
+                        height: 230px;
+                        width: 100%;
+                        clip: true;
 
-                        ScrollView {
+                        TextEdit {
                             width: 100%;
                             height: 100%;
-
-                            VerticalBox {
-                                padding: 10px;
-                                alignment: start;
-
-                                Text {
-                                    text: InstallerLogic.console_log;
-                                    color: #FFFFFF;
-                                    font-size: 12px;
-                                    font-family: "Cascadia Code, Consolas, monospace";
-                                    wrap: word-wrap;
-                                    horizontal-alignment: left;
-                                }
-                            }
+                            text: InstallerLogic.console_log;
+                            read-only: true;
+                            wrap: word-wrap;
+                            font-size: 12px;
+                            font-family: "Cascadia Code, Consolas, monospace";
                         }
                     }
 
                     if (InstallerLogic.install_failed) : HorizontalBox {
-                        alignment: center; padding-top: 15px;
+                        alignment: center; spacing: 15px; padding-top: 8px;
+                        GlowingButton {
+                            text: "Export Log to USB";
+                            primary: false;
+                            clicked => { InstallerLogic.export_logs(); }
+                        }
                         GlowingButton {
                             text: "Close Installer";
                             primary: true;
