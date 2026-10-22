@@ -5,9 +5,8 @@ out_dir = "dist"
 asset_dir = "public"
 
 [web.app]
-title = "Kestrel Arch — Deployment & Recovery Engine"
+title = "Kestrel Arch - Deployment & Recovery Engine"
 
-# Correct Dioxus 0.5 subpath base
 [web]
 base_path = "/Kestrel-Installer/"
 

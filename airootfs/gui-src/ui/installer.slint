@@ -13,7 +13,7 @@ export struct PartitionData {
     mountpoint: string,
     size: string,
     color_hex: color,
-    stretch: float, 
+    stretch: float,
 }
 
 export struct DetectedInstall {
@@ -26,25 +26,42 @@ export global InstallerLogic {
     callback start_install(string, string, string, string, string, string, string, string, string, string, string, string, string, string, string);
     callback poweroff_system();
     callback reboot_system();
-    
-    callback check_network_and_proceed(string); 
+
+    callback check_network_and_proceed(string);
     callback rescan_wifi();
-    callback connect_wifi(string, string); 
-    
+    callback connect_wifi(string, string);
+
     callback launch_gparted(string);
-    callback fetch_partitions(string); 
+    callback fetch_partitions(string);
     callback close_installer();
 
     // REPAIR ENGINE CALLBACKS & MODELS
     callback scan_existing_installations();
     callback start_repair(int, string, string, string);
-    
+
     in-out property <[PartitionData]> current_partitions;
     in property <[string]> detected_install_labels: ["Scanning for systems..."];
     in property <[string]> detected_install_os_ids: [];
     in property <[string]> available_efi_partitions: ["None / Legacy MBR"];
     in property <[string]> available_repair_bootloaders: ["GRUB", "Limine"];
-    
+
+    // REGIONAL & LOCALIZATION PROPERTIES
+    in-out property <string> selected_timezone: "UTC";
+    in-out property <string> selected_locale: "en_US.UTF-8";
+    in-out property <string> selected_keymap: "us";
+    in property <[string]> available_timezones: [
+        "UTC", "Asia/Kolkata", "America/New_York", "America/Chicago",
+        "America/Los_Angeles", "Europe/London", "Europe/Berlin",
+        "Europe/Paris", "Asia/Tokyo", "Asia/Singapore", "Australia/Sydney"
+    ];
+    in property <[string]> available_locales: [
+        "en_US.UTF-8", "en_IN.UTF-8", "en_GB.UTF-8", "de_DE.UTF-8",
+        "fr_FR.UTF-8", "es_ES.UTF-8", "ru_RU.UTF-8", "ja_JP.UTF-8"
+    ];
+    in property <[string]> available_keymaps: [
+        "us", "uk", "in", "de", "fr", "es", "ru", "jp", "dvorak", "colemak"
+    ];
+
     in property <float> progress: 0.0;
     in property <string> status_text: "Ready to deploy.";
     in property <string> console_log: "> System pre-flight checks passed.\n> Standing by for deployment protocol...\n";
@@ -59,7 +76,7 @@ component GlowingButton inherits Rectangle {
     height: 45px;
     width: 200px;
     border-radius: 6px;
-    
+
     background: primary ? @linear-gradient(90deg, #14B8A6 0%, #06B6D4 100%) : transparent;
     border-width: primary ? 0px : 1px;
     border-color: primary ? transparent : (touch.has-hover ? #06B6D4 : #374151);
@@ -74,7 +91,7 @@ component GlowingButton inherits Rectangle {
         vertical-alignment: center;
         animate color { duration: 100ms; easing: ease-in-out; }
     }
-    
+
     Rectangle {
         width: 100%;
         height: 100%;
@@ -83,7 +100,7 @@ component GlowingButton inherits Rectangle {
         opacity: touch.pressed ? 0.25 : (touch.has-hover ? 0.08 : 0.0);
         animate opacity { duration: 100ms; easing: ease-in-out; }
     }
-    
+
     touch := TouchArea {
         clicked => { root.clicked(); }
         mouse-cursor: pointer;
@@ -100,7 +117,7 @@ component RadioOption inherits Rectangle {
     border-width: 1px;
     border-color: active ? #06B6D4 : (touch.has-hover ? #4B5563 : #1F2937);
     background: active ? #06B6D410 : (touch.has-hover ? #1F293740 : transparent);
-    
+
     animate border-color { duration: 150ms; }
     animate background { duration: 150ms; }
 
@@ -115,7 +132,7 @@ component RadioOption inherits Rectangle {
             border-radius: 10px;
             border-width: 2px;
             border-color: active ? #06B6D4 : #6B7280;
-            
+
             Rectangle {
                 width: 10px;
                 height: 10px;
@@ -159,15 +176,15 @@ component PartitionVisualizer inherits VerticalBox {
             }
         }
     }
-    
+
     ScrollView {
         height: 35px;
         HorizontalBox {
             spacing: 15px; padding: 0px; alignment: start;
             for part in root.partitions : HorizontalBox {
-                spacing: 4px; 
-                Rectangle { width: 8px; height: 8px; background: part.color_hex; border-radius: 2px; y: (parent.height - self.height)/2; } 
-                Text { text: part.name + " (" + part.size + ")"; color: #9CA3AF; font-size: 10px; vertical-alignment: center; } 
+                spacing: 4px;
+                Rectangle { width: 8px; height: 8px; background: part.color_hex; border-radius: 2px; y: (parent.height - self.height)/2; }
+                Text { text: part.name + " (" + part.size + ")"; color: #9CA3AF; font-size: 10px; vertical-alignment: center; }
             }
         }
     }
@@ -175,52 +192,47 @@ component PartitionVisualizer inherits VerticalBox {
 
 export component InstallerWindow inherits Window {
     title: "Kestrel Arch Deployment Engine";
-    
+
     preferred-width: 1024px;
     preferred-height: 768px;
-    background: #020617; 
-    
+    background: #020617;
+
     default-font-family: "Geomini, Segoe UI, Roboto, sans-serif";
 
-    // ========================================================
-    // RUST HARDWARE INTEGRATION PROPERTIES
-    // ========================================================
-    in property <bool> is_efi_system: true; 
+    in property <bool> is_efi_system: true;
     in property <string> falkon_label: "Falkon (Recommended)";
-    // ========================================================
 
     in-out property <int> active_step: 0;
-    
+
     in-out property <string> error_message: "";
     in-out property <bool> show_error_popup: false;
-    
-    in property <bool> is_offline_cached: false; 
+
+    in property <bool> is_offline_cached: false;
     in property <bool> has_ethernet: false;
-    
+
     property <string> selected_mode: "Choose mode of installation";
-    
+
     in property <[string]> available_networks: ["Scanning networks..."];
     property <string> selected_network: "";
     property <string> wifi_password: "";
-    
+
     in property <[string]> available_disks: ["Scanning hardware..."];
-    in property <[string]> available_partitions: []; 
-    
+    in property <[string]> available_partitions: [];
+
     property <string> selected_disk: root.available_disks[0];
     property <string> selected_part: "1. WIPE (Erase Entire Disk)";
-    
+
     property <string> target_filesystem: "ext4";
-    
-    // UX FIX: Safe placeholder defaults for Partition dropdowns
+
     property <string> replace_partition_path: "Select Partition...";
-    property <string> gui_root_part: "Select Partition..."; 
-    property <string> gui_efi_part: "Select Partition..."; 
-    
+    property <string> gui_root_part: "Select Partition...";
+    property <string> gui_efi_part: "Select Partition...";
+
     property <string> in_hostname: "";
     property <string> in_username: "";
     property <string> in_password: "";
     property <string> in_root_password: "";
-    
+
     property <string> selected_browser: "Zen Browser";
     property <bool> perf_enabled: true;
     property <string> selected_de: "Choose your environment";
@@ -239,27 +251,27 @@ export component InstallerWindow inherits Window {
         height: 640px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        
-        background: #040D14; 
+
+        background: #040D14;
         border-radius: 20px;
         border-width: 1px;
-        border-color: #06B6D4; 
-        drop-shadow-color: #06B6D430; 
+        border-color: #06B6D4;
+        drop-shadow-color: #06B6D430;
         drop-shadow-blur: 25px;
 
         VerticalBox {
             padding: 30px;
-            
+
             HorizontalBox {
                 alignment: start;
                 height: 32px;
                 spacing: 15px;
-                
+
                 Image { source: @image-url("logo.png"); width: 32px; height: 32px; image-fit: contain; }
                 Text { text: "KESTREL ARCH"; color: #E5E7EB; font-size: 14px; font-weight: 700; letter-spacing: 2px; vertical-alignment: center; }
             }
 
-            Rectangle { height: 10px; } 
+            Rectangle { height: 10px; }
 
             VerticalBox {
                 alignment: center;
@@ -274,7 +286,7 @@ export component InstallerWindow inherits Window {
                         Text { text: "Kestrel Arch"; font-size: 56px; font-weight: 800; color: #A5F3FC; horizontal-alignment: center; letter-spacing: -1px; }
                         Text { text: "Installer & Recovery"; font-size: 56px; font-weight: 800; color: #A5F3FC; horizontal-alignment: center; letter-spacing: -1px; }
                     }
-                    Text { text: "Universal Hardware Probing. Dynamic Execution. In-Place Recovery."; font-size: 13px; color: #9CA3AF; horizontal-alignment: center; }
+                    Text { text: "Pure-Rust Provisioning Engine. Transactional Rollbacks. In-Place Recovery."; font-size: 13px; color: #9CA3AF; horizontal-alignment: center; }
                     HorizontalBox {
                         alignment: center; spacing: 20px;
                         GlowingButton { text: "Begin Installation"; primary: true; clicked => { root.active_step = 1; } }
@@ -307,7 +319,6 @@ export component InstallerWindow inherits Window {
                         }
                     }
 
-                    // Conditional Kernel Section: If target is CachyOS, enforce linux-cachyos
                     if (InstallerLogic.detected_install_os_ids[root.repair_install_idx] == "cachyos") : VerticalBox {
                         spacing: 2px;
                         Text { text: "Target distribution is CachyOS."; color: #10B981; font-size: 12px; font-weight: 700; }
@@ -324,7 +335,6 @@ export component InstallerWindow inherits Window {
                         }
                     }
 
-                    // Strictly show EFI Partition selector ONLY when running under UEFI
                     if (root.is_efi_system) : VerticalBox {
                         spacing: 4px;
                         Text { text: "Target EFI Partition (ESP):"; font-size: 12px; font-weight: 600; color: #D1D5DB; }
@@ -340,7 +350,6 @@ export component InstallerWindow inherits Window {
                         spacing: 4px;
                         Text { text: "Select Bootloader:"; font-size: 12px; font-weight: 600; color: #D1D5DB; }
                         ComboBox {
-                            // Uses the strictly filtered list from Rust (omitting UEFI-only bootloaders on BIOS)
                             model: InstallerLogic.available_repair_bootloaders;
                             current-value: root.repair_bootloader;
                             selected(val) => { root.repair_bootloader = val; }
@@ -368,58 +377,58 @@ export component InstallerWindow inherits Window {
                 }
 
                 // =========================================================
-                // STEP 1: Installation Mode ONLY
+                // STEP 1: Installation Mode
                 // =========================================================
                 if (root.active_step == 1) : VerticalBox {
                     alignment: center; spacing: 12px; padding-left: 60px; padding-right: 60px;
                     Text { text: "Deployment Mode"; font-size: 22px; font-weight: 700; color: #A5F3FC; horizontal-alignment: center; }
-                    Rectangle { height: 10px; } 
+                    Rectangle { height: 10px; }
 
                     VerticalBox {
                         spacing: 6px;
                         Text { text: "Select Installation Mode:"; font-size: 13px; font-weight: 600; color: #D1D5DB; }
-                        ComboBox { 
-                            model: root.is_offline_cached ? ["Choose mode of installation", "1. Online (Download Latest)", "2. Offline (Fast, Local Cache)"] : ["Choose mode of installation", "1. Online (Download Latest)"]; 
-                            current-value: root.selected_mode; 
-                            selected(val) => { 
-                                root.selected_mode = val; 
+                        ComboBox {
+                            model: root.is_offline_cached ? ["Choose mode of installation", "1. Online (Download Latest)", "2. Offline (Fast, Local Cache)"] : ["Choose mode of installation", "1. Online (Download Latest)"];
+                            current-value: root.selected_mode;
+                            selected(val) => {
+                                root.selected_mode = val;
                                 if (val == "2. Offline (Fast, Local Cache)") {
                                     root.selected_browser = root.falkon_label;
                                 } else {
                                     root.selected_browser = "Zen Browser";
                                 }
-                            } 
-                            height: 38px; 
+                            }
+                            height: 38px;
                         }
                         Text { text: "Online mode requires an active internet connection. Offline is air-gapped."; color: #6B7280; font-size: 12px; }
                     }
-                    
+
                     HorizontalBox {
                         alignment: center; spacing: 15px; padding-top: 20px;
                         GlowingButton { text: "Back"; primary: false; clicked => { root.active_step = 0; } }
-                        GlowingButton { 
-                            text: "Next Step"; 
-                            primary: true; 
-                            clicked => { 
+                        GlowingButton {
+                            text: "Next Step";
+                            primary: true;
+                            clicked => {
                                 if (root.selected_mode == "Choose mode of installation") {
                                     root.error_message = "Please select an Installation Mode before proceeding.";
                                     root.show_error_popup = true;
                                 } else {
                                     InstallerLogic.check_network_and_proceed(root.selected_mode);
                                 }
-                            } 
+                            }
                         }
                     }
                 }
 
                 // =========================================================
-                // STEP 2: Dedicated Network Window 
+                // STEP 2: Dedicated Network Window
                 // =========================================================
                 if (root.active_step == 2) : VerticalBox {
                     alignment: center; spacing: 12px; padding-left: 40px; padding-right: 40px;
                     Text { text: "Connect to Internet"; font-size: 22px; font-weight: 700; color: #F59E0B; horizontal-alignment: center; }
                     Text { text: "Select your Wi-Fi network from the list below to proceed with Online installation."; color: #9CA3AF; font-size: 12px; horizontal-alignment: center; }
-                    Rectangle { height: 5px; } 
+                    Rectangle { height: 5px; }
 
                     Rectangle {
                         height: 160px; width: 100%; border-radius: 8px; border-width: 1px; border-color: #1F2937; background: #020617;
@@ -427,13 +436,13 @@ export component InstallerWindow inherits Window {
                             width: 100%; height: 100%;
                             VerticalBox {
                                 padding: 8px; spacing: 4px;
-                                
+
                                 for net in root.available_networks : Rectangle {
                                     height: 35px; border-radius: 4px;
                                     background: root.selected_network == net ? #06B6D420 : (net_touch.has-hover ? #1F2937 : transparent);
                                     border-width: root.selected_network == net ? 1px : 0px;
                                     border-color: #06B6D4;
-                                    
+
                                     HorizontalBox {
                                         padding-left: 12px; padding-right: 12px; alignment: space-between;
                                         Text { text: net; color: root.selected_network == net ? #A5F3FC : #D1D5DB; font-size: 13px; font-weight: 600; vertical-alignment: center; }
@@ -452,21 +461,21 @@ export component InstallerWindow inherits Window {
                         Text { text: "Wi-Fi Password (leave blank if open):"; font-size: 12px; font-weight: 600; color: #D1D5DB; }
                         LineEdit { input-type: password; text: root.wifi_password; edited(val) => { root.wifi_password = val; } height: 35px; }
                     }
-                    
+
                     HorizontalBox {
                         alignment: center; spacing: 15px; padding-top: 10px;
                         GlowingButton { text: "Back"; primary: false; height: 38px; clicked => { root.active_step = 1; } }
                         GlowingButton { text: "Rescan"; primary: false; height: 38px; clicked => { InstallerLogic.rescan_wifi(); } }
-                        GlowingButton { 
+                        GlowingButton {
                             text: "Connect & Continue"; primary: true; height: 38px;
-                            clicked => { 
+                            clicked => {
                                 if (root.selected_network == "") {
                                     root.error_message = "Please select a Wi-Fi network from the list.";
                                     root.show_error_popup = true;
                                 } else {
-                                    InstallerLogic.connect_wifi(root.selected_network, root.wifi_password); 
+                                    InstallerLogic.connect_wifi(root.selected_network, root.wifi_password);
                                 }
-                            } 
+                            }
                         }
                     }
                 }
@@ -478,26 +487,26 @@ export component InstallerWindow inherits Window {
                     alignment: center; spacing: 12px; padding-left: 60px; padding-right: 60px;
                     Text { text: "Target Drive Selection"; font-size: 22px; font-weight: 700; color: #A5F3FC; horizontal-alignment: center; }
                     Text { text: "Choose the physical storage device where Kestrel Arch will be installed."; color: #9CA3AF; font-size: 12px; horizontal-alignment: center; }
-                    
+
                     VerticalBox {
                         spacing: 6px;
                         Text { text: "Available Storage Drives:"; font-size: 12px; font-weight: 600; color: #D1D5DB; }
-                        ComboBox { 
-                            model: root.available_disks; 
-                            current-value: root.selected_disk; 
-                            selected(val) => { 
-                                root.selected_disk = val; 
+                        ComboBox {
+                            model: root.available_disks;
+                            current-value: root.selected_disk;
+                            selected(val) => {
+                                root.selected_disk = val;
                                 InstallerLogic.fetch_partitions(val);
-                            } 
-                            height: 35px; 
+                            }
+                            height: 35px;
                         }
                     }
 
-                    PartitionVisualizer { 
-                        disk_name: root.selected_disk; 
-                        partitions: InstallerLogic.current_partitions; 
+                    PartitionVisualizer {
+                        disk_name: root.selected_disk;
+                        partitions: InstallerLogic.current_partitions;
                     }
-                    
+
                     HorizontalBox {
                         alignment: center; spacing: 15px; padding-top: 15px;
                         GlowingButton { text: "Back"; primary: false; clicked => { root.active_step = (root.selected_mode == "1. Online (Download Latest)" && !root.has_ethernet) ? 2 : 1; } }
@@ -512,47 +521,47 @@ export component InstallerWindow inherits Window {
                     alignment: center; spacing: 15px; padding-left: 40px; padding-right: 40px;
                     Text { text: "Partitioning Strategy"; font-size: 22px; font-weight: 700; color: #A5F3FC; horizontal-alignment: center; }
                     Text { text: "Select how you would like to structure partitions on " + root.selected_disk; color: #9CA3AF; font-size: 12px; horizontal-alignment: center; }
-                    Rectangle { height: 5px; } 
+                    Rectangle { height: 5px; }
 
                     VerticalBox {
                         spacing: 8px;
-                        
+
                         RadioOption {
                             title: "Wipe Disk";
                             description: "Erase the entire drive and automatically build fresh partitions.";
                             active: root.selected_part == "1. WIPE (Erase Entire Disk)";
                             clicked => { root.selected_part = "1. WIPE (Erase Entire Disk)"; }
                         }
-                        
+
                         RadioOption {
                             title: "Replace Partition";
                             description: "Format a specific target partition without touching the rest of the drive.";
                             active: root.selected_part == "2. REPLACE (Format Target Partition)";
                             clicked => { root.selected_part = "2. REPLACE (Format Target Partition)"; }
                         }
-                        
+
                         RadioOption {
                             title: "Advanced Partition Manager";
-                            description: "Launch native graphical layout manager to customize volumes.";
+                            description: "Launch GParted to format partitions (Btrfs/ext4/XFS are preserved automatically).";
                             active: root.selected_part == "3. MANUAL (Advanced Partitioning)";
                             clicked => { root.selected_part = "3. MANUAL (Advanced Partitioning)"; }
                         }
                     }
-                    
+
                     HorizontalBox {
                         alignment: center; spacing: 15px; padding-top: 15px;
                         GlowingButton { text: "Back"; primary: false; clicked => { root.active_step = 3; } }
-                        GlowingButton { 
-                            text: "Next Step"; 
-                            primary: true; 
-                            clicked => { 
-                                if (root.selected_part == "1. WIPE (Erase Entire Disk)") { root.active_step = 31; } 
-                                else if (root.selected_part == "2. REPLACE (Format Target Partition)") { root.active_step = 32; } 
-                                else { 
-                                    root.active_step = 33; 
-                                    InstallerLogic.fetch_partitions(root.selected_disk); 
+                        GlowingButton {
+                            text: "Next Step";
+                            primary: true;
+                            clicked => {
+                                if (root.selected_part == "1. WIPE (Erase Entire Disk)") { root.active_step = 31; }
+                                else if (root.selected_part == "2. REPLACE (Format Target Partition)") { root.active_step = 32; }
+                                else {
+                                    root.active_step = 33;
+                                    InstallerLogic.fetch_partitions(root.selected_disk);
                                 }
-                            } 
+                            }
                         }
                     }
                 }
@@ -563,10 +572,10 @@ export component InstallerWindow inherits Window {
                 if (root.active_step == 31) : VerticalBox {
                     alignment: center; spacing: 15px; padding-left: 60px; padding-right: 60px;
                     Text { text: "Configure Disk Wipe"; font-size: 22px; font-weight: 700; color: #A5F3FC; horizontal-alignment: center; }
-                    
+
                     VerticalBox {
                         spacing: 10px;
-                        Text { text: "⚠️ ERASING ENTIRE DISK"; color: #EF4444; font-size: 16px; font-weight: 800; horizontal-alignment: center; }
+                        Text { text: "WARNING: ERASING ENTIRE DISK"; color: #EF4444; font-size: 16px; font-weight: 800; horizontal-alignment: center; }
                         Text { text: "All data on " + root.selected_disk + " will be completely destroyed."; color: #9CA3AF; horizontal-alignment: center; wrap: word-wrap; }
                     }
 
@@ -584,25 +593,25 @@ export component InstallerWindow inherits Window {
                 }
 
                 // =========================================================
-                // STEP 32: Replace Partition 
+                // STEP 32: Replace Partition
                 // =========================================================
                 if (root.active_step == 32) : VerticalBox {
                     alignment: center; spacing: 10px; padding-left: 60px; padding-right: 60px;
                     Text { text: "Replace Partition"; font-size: 20px; font-weight: 700; color: #A5F3FC; horizontal-alignment: center; }
 
-                    PartitionVisualizer { 
-                        disk_name: root.selected_disk; 
-                        partitions: InstallerLogic.current_partitions; 
+                    PartitionVisualizer {
+                        disk_name: root.selected_disk;
+                        partitions: InstallerLogic.current_partitions;
                     }
 
                     VerticalBox {
                         spacing: 4px;
                         Text { text: "Select target partition to format & replace:"; font-size: 12px; font-weight: 600; color: #D1D5DB; }
-                        ComboBox { 
-                            model: root.available_partitions; 
-                            current-value: root.replace_partition_path; 
-                            selected(val) => { root.replace_partition_path = val; } 
-                            height: 35px; 
+                        ComboBox {
+                            model: root.available_partitions;
+                            current-value: root.replace_partition_path;
+                            selected(val) => { root.replace_partition_path = val; }
+                            height: 35px;
                         }
                     }
 
@@ -615,17 +624,17 @@ export component InstallerWindow inherits Window {
                     HorizontalBox {
                         alignment: center; spacing: 15px; padding-top: 10px;
                         GlowingButton { text: "Back"; primary: false; clicked => { root.active_step = 30; } }
-                        GlowingButton { 
-                            text: "Confirm & Continue"; 
-                            primary: true; 
-                            clicked => { 
+                        GlowingButton {
+                            text: "Confirm & Continue";
+                            primary: true;
+                            clicked => {
                                 if (root.replace_partition_path == "Select Partition..." || root.replace_partition_path == "") {
                                     root.error_message = "Please select a valid target partition to replace.";
                                     root.show_error_popup = true;
                                 } else {
-                                    root.active_step = 4; 
+                                    root.active_step = 4;
                                 }
-                            } 
+                            }
                         }
                     }
                 }
@@ -635,20 +644,20 @@ export component InstallerWindow inherits Window {
                 // =========================================================
                 if (root.active_step == 33) : VerticalBox {
                     alignment: start; spacing: 12px; padding-left: 10px; padding-right: 10px;
-                    
+
                     HorizontalBox {
                         alignment: space-between;
                         HorizontalBox {
                             spacing: 10px;
                             Text { text: "Storage device:"; color: #D1D5DB; font-size: 13px; font-weight: 600; vertical-alignment: center; }
-                            ComboBox { 
-                                model: root.available_disks; 
-                                current-value: root.selected_disk; 
-                                selected(val) => { 
-                                    root.selected_disk = val; 
+                            ComboBox {
+                                model: root.available_disks;
+                                current-value: root.selected_disk;
+                                selected(val) => {
+                                    root.selected_disk = val;
                                     InstallerLogic.fetch_partitions(val);
-                                } 
-                                width: 280px; height: 32px; 
+                                }
+                                width: 280px; height: 32px;
                             }
                         }
                     }
@@ -704,68 +713,121 @@ export component InstallerWindow inherits Window {
                     HorizontalBox {
                         alignment: space-between;
                         padding-top: 10px;
-                        Text { text: "Use GParted to visually format your layout, then close it to refresh."; color: #F59E0B; font-size: 11px; vertical-alignment: center; }
-                        GlowingButton { 
-                            text: "Launch GParted"; primary: false; width: 140px; height: 32px; 
-                            clicked => { InstallerLogic.launch_gparted(root.selected_disk); } 
+                        Text { text: "Format in GParted (Btrfs/ext4/XFS are preserved automatically on install)."; color: #F59E0B; font-size: 11px; vertical-alignment: center; }
+                        GlowingButton {
+                            text: "Launch GParted"; primary: false; width: 140px; height: 32px;
+                            clicked => { InstallerLogic.launch_gparted(root.selected_disk); }
                         }
                     }
 
                     HorizontalBox {
                         alignment: end; spacing: 12px; padding-top: 5px;
                         GlowingButton { text: "Back"; primary: false; width: 100px; height: 35px; clicked => { root.active_step = 30; } }
-                        GlowingButton { 
-                            text: "Next Step"; primary: true; width: 100px; height: 35px; 
-                            clicked => { 
+                        GlowingButton {
+                            text: "Next Step"; primary: true; width: 100px; height: 35px;
+                            clicked => {
                                 if (root.gui_root_part == "Select Partition..." || root.gui_efi_part == "Select Partition...") {
                                     root.error_message = "Please assign both a Root (/) and EFI (/boot) partition before continuing.";
                                     root.show_error_popup = true;
                                 } else {
                                     root.active_step = 4;
                                 }
-                            } 
+                            }
                         }
                     }
                 }
 
                 // =========================================================
-                // STEP 4: Account Creation Window ONLY
+                // STEP 4: User Credentials & Regional Settings
                 // =========================================================
                 if (root.active_step == 4) : VerticalBox {
-                    alignment: center; spacing: 10px; padding-left: 60px; padding-right: 60px;
-                    Text { text: "User Credentials"; font-size: 22px; font-weight: 700; color: #A5F3FC; horizontal-alignment: center; }
-                    Rectangle { height: 10px; } 
-
-                    VerticalBox { spacing: 4px; Text { text: "System Hostname:"; font-size: 13px; font-weight: 500; color: #D1D5DB; } LineEdit { text: root.in_hostname; edited(val) => { root.in_hostname = val; } height: 38px; } }
-                    VerticalBox { spacing: 4px; Text { text: "Username:"; font-size: 13px; font-weight: 500; color: #D1D5DB; } LineEdit { text: root.in_username; edited(val) => { root.in_username = val; } height: 38px; } }
-                    VerticalBox { spacing: 4px; Text { text: "User Password:"; font-size: 13px; font-weight: 500; color: #D1D5DB; } LineEdit { input-type: password; text: root.in_password; edited(val) => { root.in_password = val; } height: 38px; } }
-                    VerticalBox { spacing: 4px; Text { text: "Root Password (leave blank to match User):"; font-size: 13px; font-weight: 500; color: #D1D5DB; } LineEdit { input-type: password; text: root.in_root_password; edited(val) => { root.in_root_password = val; } height: 38px; } }
+                    alignment: center; spacing: 8px; padding-left: 50px; padding-right: 50px;
+                    Text { text: "Identity & Regional Setup"; font-size: 22px; font-weight: 700; color: #A5F3FC; horizontal-alignment: center; }
 
                     HorizontalBox {
-                        alignment: center; spacing: 15px; padding-top: 20px;
-                        GlowingButton { 
-                            text: "Back"; primary: false; 
-                            clicked => { 
+                        spacing: 12px;
+                        VerticalBox {
+                            spacing: 4px;
+                            Text { text: "System Hostname:"; font-size: 12px; font-weight: 600; color: #D1D5DB; }
+                            LineEdit { text: root.in_hostname; edited(val) => { root.in_hostname = val; } height: 34px; }
+                        }
+                        VerticalBox {
+                            spacing: 4px;
+                            Text { text: "Username:"; font-size: 12px; font-weight: 600; color: #D1D5DB; }
+                            LineEdit { text: root.in_username; edited(val) => { root.in_username = val; } height: 34px; }
+                        }
+                    }
+
+                    HorizontalBox {
+                        spacing: 12px;
+                        VerticalBox {
+                            spacing: 4px;
+                            Text { text: "User Password:"; font-size: 12px; font-weight: 600; color: #D1D5DB; }
+                            LineEdit { input-type: password; text: root.in_password; edited(val) => { root.in_password = val; } height: 34px; }
+                        }
+                        VerticalBox {
+                            spacing: 4px;
+                            Text { text: "Root Password (optional):"; font-size: 12px; font-weight: 600; color: #D1D5DB; }
+                            LineEdit { input-type: password; text: root.in_root_password; edited(val) => { root.in_root_password = val; } height: 34px; }
+                        }
+                    }
+
+                    HorizontalBox {
+                        spacing: 12px;
+                        VerticalBox {
+                            spacing: 4px;
+                            Text { text: "Timezone:"; font-size: 12px; font-weight: 600; color: #D1D5DB; }
+                            ComboBox {
+                                model: InstallerLogic.available_timezones;
+                                current-value <=> InstallerLogic.selected_timezone;
+                                height: 34px;
+                            }
+                        }
+                        VerticalBox {
+                            spacing: 4px;
+                            Text { text: "System Locale:"; font-size: 12px; font-weight: 600; color: #D1D5DB; }
+                            ComboBox {
+                                model: InstallerLogic.available_locales;
+                                current-value <=> InstallerLogic.selected_locale;
+                                height: 34px;
+                            }
+                        }
+                        VerticalBox {
+                            spacing: 4px;
+                            Text { text: "Keyboard Layout:"; font-size: 12px; font-weight: 600; color: #D1D5DB; }
+                            ComboBox {
+                                model: InstallerLogic.available_keymaps;
+                                current-value <=> InstallerLogic.selected_keymap;
+                                height: 34px;
+                            }
+                        }
+                    }
+
+                    HorizontalBox {
+                        alignment: center; spacing: 15px; padding-top: 12px;
+                        GlowingButton {
+                            text: "Back"; primary: false;
+                            clicked => {
                                 if (root.selected_part == "1. WIPE (Erase Entire Disk)") { root.active_step = 31; }
                                 else if (root.selected_part == "2. REPLACE (Format Target Partition)") { root.active_step = 32; }
                                 else { root.active_step = 33; }
-                            } 
+                            }
                         }
-                        
-                        GlowingButton { 
-                            text: "Next Step"; primary: true; 
-                            clicked => { 
+
+                        GlowingButton {
+                            text: "Next Step"; primary: true;
+                            clicked => {
                                 if (root.in_hostname == "" || root.in_username == "" || root.in_password == "") {
                                     root.error_message = "System Hostname, Username, and Password cannot be left blank.";
                                     root.show_error_popup = true;
                                 } else { root.active_step = 5; }
-                            } 
+                            }
                         }
                     }
                 }
 
                 // =========================================================
-                // STEP 5: Browser Selection Window 
+                // STEP 5: Browser Selection Window
                 // =========================================================
                 if (root.active_step == 5) : VerticalBox {
                     alignment: center; spacing: 10px; padding-left: 40px; padding-right: 40px;
@@ -779,17 +841,17 @@ export component InstallerWindow inherits Window {
                             width: 100%; height: 100%;
                             VerticalBox {
                                 padding: 8px; spacing: 6px;
-                                
+
                                 if (root.selected_mode != "2. Offline (Fast, Local Cache)") : RadioOption { title: "Zen Browser"; description: "Highly optimized Firefox fork focused on privacy and speed."; active: root.selected_browser == "Zen Browser"; clicked => { root.selected_browser = "Zen Browser"; } }
                                 if (root.selected_mode != "2. Offline (Fast, Local Cache)") : RadioOption { title: "LibreWolf"; description: "Customized version of Firefox prioritizing security and privacy."; active: root.selected_browser == "LibreWolf"; clicked => { root.selected_browser = "LibreWolf"; } }
                                 if (root.selected_mode != "2. Offline (Fast, Local Cache)") : RadioOption { title: "Firefox"; description: "The standard open-source web browser engine."; active: root.selected_browser == "Firefox"; clicked => { root.selected_browser = "Firefox"; } }
                                 if (root.selected_mode != "2. Offline (Fast, Local Cache)") : RadioOption { title: "Brave"; description: "Chromium-based browser with built-in tracker blocking."; active: root.selected_browser == "Brave"; clicked => { root.selected_browser = "Brave"; } }
-                                
+
                                 RadioOption { title: root.falkon_label; description: "Lightweight, lightning-fast Qt-based browser integrating seamlessly with KDE."; active: root.selected_browser == root.falkon_label; clicked => { root.selected_browser = root.falkon_label; } }
                             }
                         }
                     }
-                    
+
                     HorizontalBox {
                         alignment: center; spacing: 15px; padding-top: 15px;
                         GlowingButton { text: "Back"; primary: false; clicked => { root.active_step = 4; } }
@@ -798,7 +860,7 @@ export component InstallerWindow inherits Window {
                 }
 
                 // =========================================================
-                // STEP 51: Desktop Environment Selection 
+                // STEP 51: Desktop Environment Selection
                 // =========================================================
                 if (root.active_step == 51) : VerticalBox {
                     alignment: center; spacing: 8px; padding-left: 30px; padding-right: 30px;
@@ -811,7 +873,7 @@ export component InstallerWindow inherits Window {
                             width: 100%; height: 100%;
                             VerticalBox {
                                 padding: 8px; spacing: 6px;
-                                
+
                                 RadioOption { title: "1. Hyprland"; description: "Visually pleasing dynamic tiling Wayland compositor."; active: root.selected_de == "1. Hyprland"; clicked => { root.selected_de = "1. Hyprland"; } }
                                 RadioOption { title: "2. KDE Plasma 6"; description: "Comprehensive, flexible next-gen Wayland desktop environment."; active: root.selected_de == "2. KDE Plasma 6"; clicked => { root.selected_de = "2. KDE Plasma 6"; } }
                                 RadioOption { title: "3. XFCE 4.18+"; description: "Modernized, lightweight, and rock-solid traditional desktop layout."; active: root.selected_de == "3. XFCE 4.18+"; clicked => { root.selected_de = "3. XFCE 4.18+"; } }
@@ -836,20 +898,20 @@ export component InstallerWindow inherits Window {
                     HorizontalBox {
                         alignment: center; spacing: 15px; padding-top: 10px;
                         GlowingButton { text: "Back"; primary: false; clicked => { root.active_step = 5; } }
-                        GlowingButton { 
-                            text: "Next Step"; primary: true; 
-                            clicked => { 
+                        GlowingButton {
+                            text: "Next Step"; primary: true;
+                            clicked => {
                                 if (root.selected_de == "Choose your environment") {
                                     root.error_message = "Please select a Desktop Environment before proceeding.";
                                     root.show_error_popup = true;
                                 } else { root.active_step = 52; }
-                            } 
+                            }
                         }
                     }
                 }
 
                 // =========================================================
-                // STEP 52: Boot Manager & Initialization 
+                // STEP 52: Boot Manager & Initialization
                 // =========================================================
                 if (root.active_step == 52) : VerticalBox {
                     alignment: center; spacing: 8px; padding-left: 40px; padding-right: 40px;
@@ -862,7 +924,7 @@ export component InstallerWindow inherits Window {
                             width: 100%; height: 100%;
                             VerticalBox {
                                 padding: 8px; spacing: 6px;
-                                
+
                                 RadioOption { title: "GRUB (Universal)"; description: "Universal multi-boot loader; fully supports legacy BIOS and modern UEFI."; active: root.selected_boot == "GRUB"; clicked => { root.selected_boot = "GRUB"; } }
                                 if (root.is_efi_system) : RadioOption { title: "systemd-boot (UEFI Only)"; description: "Light minimalist EFI manager tracking kernel slots (No BIOS support)."; active: root.selected_boot == "systemd-boot"; clicked => { root.selected_boot = "systemd-boot"; } }
                                 if (root.is_efi_system) : RadioOption { title: "rEFInd (UEFI Only)"; description: "Rich graphical shell auto-detecting boot options (No BIOS support)."; active: root.selected_boot == "rEFInd"; clicked => { root.selected_boot = "rEFInd"; } }
@@ -878,14 +940,14 @@ export component InstallerWindow inherits Window {
                     }
 
                     Text { text: "WARNING: Proceeding will formally execute installation logic."; color: #EF4444; font-size: 11px; font-weight: 700; horizontal-alignment: center; }
-                    
+
                     HorizontalBox {
                         alignment: center; spacing: 15px; padding-top: 10px;
                         GlowingButton { text: "Back"; primary: false; clicked => { root.active_step = 51; } }
-                        
-                        GlowingButton { 
-                            text: "Initialize Protocol"; primary: true; 
-                            clicked => { 
+
+                        GlowingButton {
+                            text: "Initialize Protocol"; primary: true;
+                            clicked => {
                                 root.active_step = 6;
                                 InstallerLogic.start_install(
                                     root.selected_disk, root.selected_mode, root.selected_part,
@@ -895,13 +957,13 @@ export component InstallerWindow inherits Window {
                                     root.in_root_password, root.selected_browser,
                                     root.perf_enabled ? "Y" : "N", root.selected_de, root.selected_boot
                                 );
-                            } 
+                            }
                         }
                     }
                 }
 
                 // =========================================================
-                // STEP 6: Deployment Execution Screen 
+                // STEP 6: Deployment Execution Screen
                 // =========================================================
                 if (root.active_step == 6) : VerticalBox {
                     alignment: center; spacing: 15px; padding-left: 50px; padding-right: 50px;
@@ -918,16 +980,16 @@ export component InstallerWindow inherits Window {
                     }
 
                     if (root.show_console) : Rectangle {
-                        background: #000000; border-radius: 8px; border-width: 1px; border-color: #1F2937; height: 220px; width: 100%; clip: true; 
-                        
+                        background: #000000; border-radius: 8px; border-width: 1px; border-color: #1F2937; height: 220px; width: 100%; clip: true;
+
                         ScrollView {
                             width: 100%;
                             height: 100%;
-                            
+
                             VerticalBox {
                                 padding: 10px;
                                 alignment: start;
-                                
+
                                 Text {
                                     text: InstallerLogic.console_log;
                                     color: #FFFFFF;
@@ -942,10 +1004,10 @@ export component InstallerWindow inherits Window {
 
                     if (InstallerLogic.install_failed) : HorizontalBox {
                         alignment: center; padding-top: 15px;
-                        GlowingButton { 
-                            text: "Close Installer"; 
-                            primary: true; 
-                            clicked => { InstallerLogic.close_installer(); } 
+                        GlowingButton {
+                            text: "Close Installer";
+                            primary: true;
+                            clicked => { InstallerLogic.close_installer(); }
                         }
                     }
                 }
@@ -980,7 +1042,7 @@ export component InstallerWindow inherits Window {
             HorizontalBox {
                 alignment: center;
                 Rectangle {
-                    width: 550px; height: 250px; background: #040D14; border-radius: 12px; border-width: 1px; border-color: #EF4444; drop-shadow-color: #EF444440; drop-shadow-blur: 25px; 
+                    width: 550px; height: 250px; background: #040D14; border-radius: 12px; border-width: 1px; border-color: #EF4444; drop-shadow-color: #EF444440; drop-shadow-blur: 25px;
                     VerticalBox {
                         padding: 30px; spacing: 20px; alignment: center;
                         Text { text: "ATTENTION NEEDED"; font-size: 18px; font-weight: 800; color: #EF4444; horizontal-alignment: center; letter-spacing: 1px; }

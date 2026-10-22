@@ -1,14 +1,20 @@
+mod engine;
+
 slint::include_modules!();
 
-use std::fs;
-use std::io::Read;
-use std::path::Path;
-use std::process::{Command, Stdio};
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
+use engine::{
+    probe_hardware_topology, BootloaderType, DeploymentManifest, InstallMode, PartitionStrategy,
+    RepairManifest, TelemetryEvent,
+};
 use slint::{ModelRc, SharedString, VecModel};
+use std::env;
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+use std::rc::Rc;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 #[derive(Clone, Debug)]
 struct ExistingInstall {
@@ -38,17 +44,11 @@ fn scan_partitions(disk_path: &str) -> (Vec<PartitionData>, Vec<SharedString>) {
     let mut partitions = Vec::new();
     let mut available_dropdown = Vec::new();
 
-    // UX FIX: Inject a safe placeholder at the very top of the dropdown lists!
     available_dropdown.push("Select Partition...".into());
 
     let disk_output = Command::new("lsblk")
-        .arg("-b")
-        .arg("-n")
-        .arg("-d")
-        .arg("-o")
-        .arg("SIZE")
-        .arg(disk_path)
-        .output();
+    .args(["-b", "-n", "-d", "-o", "SIZE", disk_path])
+    .output();
     let total_bytes: f64 = if let Ok(out) = disk_output {
         String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(1.0)
     } else {
@@ -56,17 +56,11 @@ fn scan_partitions(disk_path: &str) -> (Vec<PartitionData>, Vec<SharedString>) {
     };
 
     let output = Command::new("lsblk")
-        .arg("-P")
-        .arg("-p")
-        .arg("-b")
-        .arg("-o")
-        .arg("NAME,FSTYPE,LABEL,MOUNTPOINT,SIZE")
-        .arg(disk_path)
-        .output();
+    .args(["-P", "-p", "-b", "-o", "NAME,FSTYPE,LABEL,MOUNTPOINT,SIZE", disk_path])
+    .output();
 
     if let Ok(out) = output {
         let stdout = String::from_utf8_lossy(&out.stdout);
-
         let colors = [
             slint::Color::from_rgb_u8(239, 68, 68),
             slint::Color::from_rgb_u8(245, 158, 11),
@@ -88,7 +82,6 @@ fn scan_partitions(disk_path: &str) -> (Vec<PartitionData>, Vec<SharedString>) {
             };
 
             let name = get_val("NAME");
-
             if !name.is_empty() && name != disk_path {
                 let fs = get_val("FSTYPE");
                 let raw_size: u64 = get_val("SIZE").parse().unwrap_or(0);
@@ -118,12 +111,12 @@ fn scan_partitions(disk_path: &str) -> (Vec<PartitionData>, Vec<SharedString>) {
     if partitions.is_empty() {
         partitions.push(PartitionData {
             name: "Unallocated Space".into(),
-            fstype: "None".into(),
-            label: "".into(),
-            mountpoint: "".into(),
-            size: format_size(total_bytes as u64).into(),
-            color_hex: slint::Color::from_rgb_u8(75, 85, 99),
-            stretch: 1.0,
+                        fstype: "None".into(),
+                        label: "".into(),
+                        mountpoint: "".into(),
+                        size: format_size(total_bytes as u64).into(),
+                        color_hex: slint::Color::from_rgb_u8(75, 85, 99),
+                        stretch: 1.0,
         });
     }
 
@@ -134,7 +127,6 @@ fn probe_existing_systems() -> (Vec<ExistingInstall>, Vec<String>) {
     let mut targets = Vec::new();
     let mut efi_partitions = Vec::new();
     let temp_mount = "/mnt/kestrel_probe_temp";
-
     let _ = fs::create_dir_all(temp_mount);
 
     if let Ok(output) = Command::new("lsblk").args(["-lno", "PATH,FSTYPE"]).output() {
@@ -152,12 +144,18 @@ fn probe_existing_systems() -> (Vec<ExistingInstall>, Vec<String>) {
             }
 
             if matches!(fstype, "ext4" | "btrfs" | "xfs" | "f2fs") {
-                if Command::new("mount")
-                    .args(["-o", "ro", path, temp_mount])
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false)
-                {
+                let mounted = Command::new("mount")
+                .args(["-o", "ro,subvol=@", path, temp_mount])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+                || Command::new("mount")
+                .args(["-o", "ro", path, temp_mount])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+
+                if mounted {
                     let arch_rel = Path::new(temp_mount).join("etc/arch-release").exists();
                     let cachy_rel = Path::new(temp_mount).join("etc/cachyos-release").exists();
 
@@ -178,8 +176,8 @@ fn probe_existing_systems() -> (Vec<ExistingInstall>, Vec<String>) {
 
                         targets.push(ExistingInstall {
                             partition: path.to_string(),
-                            os_id,
-                            label: format!("{} on {}", name, path),
+                                     os_id,
+                                     label: format!("{} on {}", name, path),
                         });
                     }
                     let _ = Command::new("umount").arg(temp_mount).status();
@@ -192,24 +190,134 @@ fn probe_existing_systems() -> (Vec<ExistingInstall>, Vec<String>) {
     (targets, efi_partitions)
 }
 
+fn attach_telemetry_stream(
+    rx: mpsc::Receiver<TelemetryEvent>,
+    ui_weak: slint::Weak<InstallerWindow>,
+    initial_logs: Vec<String>,
+) {
+    thread::spawn(move || {
+        let mut logs = initial_logs;
+        while let Ok(event) = rx.recv() {
+            match event {
+                TelemetryEvent::Progress(p) => {
+                    let ui_copy = ui_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_copy.upgrade() {
+                            ui.global::<InstallerLogic>().set_progress(p);
+                        }
+                    });
+                }
+                TelemetryEvent::Status(s) => {
+                    let ui_copy = ui_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_copy.upgrade() {
+                            ui.global::<InstallerLogic>().set_status_text(s.into());
+                        }
+                    });
+                }
+                TelemetryEvent::Log(line) => {
+                    logs.push(line);
+                    if logs.len() > 120 {
+                        let excess = logs.len() - 120;
+                        logs.drain(0..excess);
+                    }
+                    let joined = logs.join("\n");
+                    let ui_copy = ui_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_copy.upgrade() {
+                            ui.global::<InstallerLogic>().set_console_log(joined.into());
+                        }
+                    });
+                }
+                TelemetryEvent::Completed => {
+                    let ui_copy = ui_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_copy.upgrade() {
+                            ui.global::<InstallerLogic>().set_progress(1.0);
+                            ui.set_active_step(99);
+                        }
+                    });
+                    break;
+                }
+                TelemetryEvent::Fault(err) => {
+                    logs.push(format!("\n[!] CRITICAL FAULT: {}", err));
+                    let joined = logs.join("\n");
+                    let ui_copy = ui_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_copy.upgrade() {
+                            ui.global::<InstallerLogic>()
+                            .set_status_text(format!("Fault: {}", err).into());
+                            ui.global::<InstallerLogic>().set_console_log(joined.into());
+                            ui.global::<InstallerLogic>().set_install_failed(true);
+                        }
+                    });
+                    break;
+                }
+            }
+        }
+    });
+}
+
 fn main() -> Result<(), slint::PlatformError> {
+    let args: Vec<String> = env::args().collect();
+
+    // Headless CLI Repair Mode: kestrel-gui --repair <root_part> <os_id> <kernel> <bootloader> [efi_part]
+    if args.len() >= 6 && args[1] == "--repair" {
+        let bootloader = match args[5].as_str() {
+            "systemd-boot" => BootloaderType::SystemdBoot,
+            "Limine" => BootloaderType::Limine,
+            "rEFInd" => BootloaderType::Refind,
+            _ => BootloaderType::Grub,
+        };
+        let manifest = RepairManifest {
+            target_partition: args[2].clone(),
+            os_id: args[3].clone(),
+            kernel_pkg: args[4].clone(),
+            bootloader,
+            efi_partition: args.get(6).cloned().unwrap_or_default(),
+            is_uefi: Path::new("/sys/firmware/efi").exists(),
+        };
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || engine::execute_repair(manifest, tx));
+        while let Ok(ev) = rx.recv() {
+            match ev {
+                TelemetryEvent::Log(l) => println!("{}", l),
+                TelemetryEvent::Completed => {
+                    println!("==> [SUCCESS] Repair finished.");
+                    std::process::exit(0);
+                }
+                TelemetryEvent::Fault(f) => {
+                    eprintln!("==> [FAULT] {}", f);
+                    std::process::exit(1);
+                }
+                _ => {}
+            }
+        }
+        return Ok(());
+    }
+
     let ui = InstallerWindow::new()?;
 
     let is_offline = Path::new("/opt/offline_cache").exists();
     ui.set_is_offline_cached(is_offline);
 
-    // Firmware check
     let is_efi = Path::new("/sys/firmware/efi").exists();
     ui.set_is_efi_system(is_efi);
 
-    // Filter bootloaders: strictly remove UEFI-only entries on BIOS systems
     let repair_bootloaders: Vec<SharedString> = if is_efi {
-        vec!["GRUB".into(), "systemd-boot".into(), "Limine".into(), "rEFInd".into()]
+        vec![
+            "GRUB".into(),
+            "systemd-boot".into(),
+            "Limine".into(),
+            "rEFInd".into(),
+        ]
     } else {
         vec!["GRUB".into(), "Limine".into()]
     };
     ui.global::<InstallerLogic>()
-        .set_available_repair_bootloaders(ModelRc::from(Rc::new(VecModel::from(repair_bootloaders))));
+    .set_available_repair_bootloaders(ModelRc::from(Rc::new(VecModel::from(
+        repair_bootloaders,
+    ))));
 
     let falkon_text = if is_offline {
         SharedString::from("Falkon (Offline Default)")
@@ -219,72 +327,58 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_falkon_label(falkon_text);
 
     if let Ok(status) = Command::new("ping")
-        .arg("-c")
-        .arg("1")
-        .arg("-W")
-        .arg("2")
-        .arg("archlinux.org")
+        .args(["-c", "1", "-W", "2", "archlinux.org"])
         .status()
-    {
-        if status.success() {
-            ui.set_has_ethernet(true);
+        {
+            if status.success() {
+                ui.set_has_ethernet(true);
+            }
         }
-    }
 
-    let output = Command::new("lsblk")
-        .arg("-nd")
-        .arg("-o")
-        .arg("NAME,SIZE")
+        let output = Command::new("lsblk")
+        .args(["-nd", "-o", "NAME,SIZE"])
         .output()
         .expect("Failed to execute lsblk");
 
-    let mut disks: Vec<SharedString> = Vec::new();
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let name = parts[0];
-                let size = parts[1];
-                if name.starts_with("sd") || name.starts_with("nvme") || name.starts_with("vd") {
-                    let display_str = format!("/dev/{} - {}", name, size);
-                    disks.push(display_str.into());
+        let mut disks: Vec<SharedString> = Vec::new();
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let name = parts[0];
+                    let size = parts[1];
+                    if name.starts_with("sd") || name.starts_with("nvme") || name.starts_with("vd") {
+                        disks.push(format!("/dev/{} - {}", name, size).into());
+                    }
                 }
             }
         }
-    }
+        if disks.is_empty() {
+            disks.push("No drives found!".into());
+        }
 
-    if disks.is_empty() {
-        disks.push("No drives found!".into());
-    }
-
-    if let Some(first_disk) = disks.first() {
-        let pure = first_disk.as_str().split_whitespace().next().unwrap_or("");
-        let (parts, avail) = scan_partitions(pure);
-        ui.global::<InstallerLogic>()
+        if let Some(first_disk) = disks.first() {
+            let pure = first_disk.as_str().split_whitespace().next().unwrap_or("");
+            let (parts, avail) = scan_partitions(pure);
+            ui.global::<InstallerLogic>()
             .set_current_partitions(ModelRc::from(Rc::new(VecModel::from(parts))));
-        ui.set_available_partitions(ModelRc::from(Rc::new(VecModel::from(avail))));
-    }
+            ui.set_available_partitions(ModelRc::from(Rc::new(VecModel::from(avail))));
+        }
 
-    let disks_model = Rc::new(VecModel::from(disks));
-    ui.set_available_disks(ModelRc::from(disks_model.clone()));
+        ui.set_available_disks(ModelRc::from(Rc::new(VecModel::from(disks))));
 
-    // Shared storage for detected repair targets across callbacks
-    let detected_targets_state: Arc<Mutex<Vec<ExistingInstall>>> = Arc::new(Mutex::new(Vec::new()));
+        let detected_targets_state: Arc<Mutex<Vec<ExistingInstall>>> = Arc::new(Mutex::new(Vec::new()));
 
-    // -------------------------------------------------------------
-    // SCAN EXISTING INSTALLATIONS (REPAIR TRIGGER)
-    // -------------------------------------------------------------
-    let ui_handle_repair_scan = ui.as_weak();
-    let state_scan = detected_targets_state.clone();
-    ui.global::<InstallerLogic>()
+        let ui_handle_repair_scan = ui.as_weak();
+        let state_scan = detected_targets_state.clone();
+        ui.global::<InstallerLogic>()
         .on_scan_existing_installations(move || {
             let ui_handle = ui_handle_repair_scan.clone();
             let state_scan = state_scan.clone();
 
             thread::spawn(move || {
                 let (installs, efi_parts) = probe_existing_systems();
-
                 let mut labels: Vec<SharedString> = Vec::new();
                 let mut os_ids: Vec<SharedString> = Vec::new();
 
@@ -307,198 +401,91 @@ fn main() -> Result<(), slint::PlatformError> {
                     }
                 }
 
-                let mut lock = state_scan.lock().unwrap();
-                *lock = installs;
+                *state_scan.lock().unwrap() = installs;
 
-                slint::invoke_from_event_loop(move || {
+                let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_handle.upgrade() {
                         ui.global::<InstallerLogic>()
-                            .set_detected_install_labels(ModelRc::from(Rc::new(VecModel::from(labels))));
+                        .set_detected_install_labels(ModelRc::from(Rc::new(VecModel::from(
+                            labels,
+                        ))));
                         ui.global::<InstallerLogic>()
-                            .set_detected_install_os_ids(ModelRc::from(Rc::new(VecModel::from(os_ids))));
+                        .set_detected_install_os_ids(ModelRc::from(Rc::new(VecModel::from(
+                            os_ids,
+                        ))));
                         ui.global::<InstallerLogic>()
-                            .set_available_efi_partitions(ModelRc::from(Rc::new(VecModel::from(efi_dropdown))));
+                        .set_available_efi_partitions(ModelRc::from(Rc::new(VecModel::from(
+                            efi_dropdown,
+                        ))));
                     }
-                })
-                .unwrap();
+                });
             });
         });
 
-    // -------------------------------------------------------------
-    // START REPAIR EXECUTION
-    // -------------------------------------------------------------
-    let ui_handle_repair_exec = ui.as_weak();
-    let state_exec = detected_targets_state.clone();
-    ui.global::<InstallerLogic>().on_start_repair(
-        move |install_idx, kernel_choice, boot_choice, efi_part| {
-            let ui_handle = ui_handle_repair_exec.clone();
-            let state_exec = state_exec.clone();
-
-            let k_choice = kernel_choice.to_string();
-            let b_choice = boot_choice.to_string();
-            let mut efi_choice = efi_part.to_string();
-            if efi_choice.contains("None") || efi_choice.contains("Select") {
-                efi_choice = String::new();
-            }
-
-            thread::spawn(move || {
+        let ui_handle_repair_exec = ui.as_weak();
+        let state_exec = detected_targets_state.clone();
+        ui.global::<InstallerLogic>().on_start_repair(
+            move |install_idx, kernel_choice, boot_choice, efi_part| {
+                let ui_handle = ui_handle_repair_exec.clone();
                 let targets = state_exec.lock().unwrap().clone();
                 let idx = install_idx as usize;
 
                 if idx >= targets.len() {
-                    slint::invoke_from_event_loop({
-                        let ui_handle = ui_handle.clone();
-                        move || {
-                            if let Some(ui) = ui_handle.upgrade() {
-                                ui.global::<InstallerLogic>()
-                                    .set_status_text("Error: Invalid installation selected.".into());
-                                ui.global::<InstallerLogic>().set_install_failed(true);
-                            }
-                        }
-                    })
-                    .unwrap();
+                    if let Some(ui) = ui_handle.upgrade() {
+                        ui.global::<InstallerLogic>()
+                        .set_status_text("Error: Invalid installation selected.".into());
+                        ui.global::<InstallerLogic>().set_install_failed(true);
+                    }
                     return;
                 }
 
-                let target = &targets[idx];
-
-                let script_path = if Path::new("/usr/local/bin/kestrel-repair.sh").exists() {
-                    "/usr/local/bin/kestrel-repair.sh"
-                } else {
-                    "./airootfs/usr/local/bin/kestrel-repair.sh"
+                let target = targets[idx].clone();
+                let bootloader = match boot_choice.as_str() {
+                    "systemd-boot" => BootloaderType::SystemdBoot,
+                    "Limine" => BootloaderType::Limine,
+                    "rEFInd" => BootloaderType::Refind,
+                    _ => BootloaderType::Grub,
                 };
 
-                let mut child = Command::new("bash")
-                    .arg(script_path)
-                    .arg(&target.partition)
-                    .arg(&target.os_id)
-                    .arg(&k_choice)
-                    .arg(&b_choice)
-                    .arg(&efi_choice)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .expect("Failed to execute kestrel-repair.sh");
+                let manifest = RepairManifest {
+                    target_partition: target.partition.clone(),
+                                                      os_id: target.os_id.clone(),
+                                                      kernel_pkg: kernel_choice.to_string(),
+                                                      bootloader,
+                                                      efi_partition: efi_part.to_string(),
+                                                      is_uefi: Path::new("/sys/firmware/efi").exists(),
+                };
 
-                let mut stdout = child.stdout.take().expect("Failed to capture repair stdout");
-                let mut buffer = [0u8; 128];
-                let mut current_line = String::new();
-                let mut log_lines: Vec<String> = vec![
-                    format!("> Repairing installation on {}...", target.partition),
-                    format!("> Assigned Kernel: {}", k_choice),
-                    format!("> Assigned Bootloader: {}", b_choice),
-                ];
+                let (tx, rx) = mpsc::channel();
+                attach_telemetry_stream(
+                    rx,
+                    ui_handle,
+                    vec![
+                        format!("> Native Rust Repair Engine initialized on {}", target.partition),
+                            format!("> Kernel: {} | Bootloader: {:?}", kernel_choice, bootloader),
+                    ],
+                );
 
-                let mut last_ui_update = Instant::now();
-                let update_interval = Duration::from_millis(40);
-                let mut progress_val: f32 = 0.15;
+                thread::spawn(move || {
+                    engine::execute_repair(manifest, tx);
+                });
+            },
+        );
 
-                loop {
-                    match stdout.read(&mut buffer) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let chunk = String::from_utf8_lossy(&buffer[..n]);
-                            for c in chunk.chars() {
-                                if c == '\n' {
-                                    let line = current_line.trim().to_string();
-                                    if !line.is_empty() {
-                                        if line.contains("[1/5]") {
-                                            progress_val = 0.20;
-                                        } else if line.contains("[2/5]") {
-                                            progress_val = 0.35;
-                                        } else if line.contains("[3/5]") {
-                                            progress_val = 0.55;
-                                        } else if line.contains("[4/5]") {
-                                            progress_val = 0.75;
-                                        } else if line.contains("[5/5]") {
-                                            progress_val = 0.90;
-                                        }
-
-                                        log_lines.push(format!("> {}", line));
-                                    }
-                                    current_line.clear();
-                                } else if c != '\r' {
-                                    current_line.push(c);
-                                }
-                            }
-
-                            if last_ui_update.elapsed() >= update_interval {
-                                if log_lines.len() > 100 {
-                                    let excess = log_lines.len() - 100;
-                                    log_lines.drain(0..excess);
-                                }
-                                let log_update = log_lines.join("\n");
-                                let status_msg = log_lines
-                                    .last()
-                                    .cloned()
-                                    .unwrap_or_default()
-                                    .replace("> ", "");
-
-                                slint::invoke_from_event_loop({
-                                    let ui_handle = ui_handle.clone();
-                                    let s_msg = status_msg.clone();
-                                    move || {
-                                        if let Some(ui) = ui_handle.upgrade() {
-                                            ui.global::<InstallerLogic>().set_progress(progress_val);
-                                            ui.global::<InstallerLogic>().set_status_text(s_msg.into());
-                                            ui.global::<InstallerLogic>().set_console_log(log_update.into());
-                                        }
-                                    }
-                                })
-                                .unwrap();
-                                last_ui_update = Instant::now();
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-
-                let status = child.wait().expect("Failed to wait on repair script");
-                let final_log = log_lines.join("\n");
-
-                slint::invoke_from_event_loop({
-                    let ui_handle = ui_handle.clone();
-                    move || {
-                        if let Some(ui) = ui_handle.upgrade() {
-                            if status.success() {
-                                ui.global::<InstallerLogic>().set_progress(1.0);
-                                ui.set_active_step(99);
-                            } else {
-                                ui.global::<InstallerLogic>()
-                                    .set_status_text("Repair encountered a fault. Check logs.".into());
-                                ui.global::<InstallerLogic>().set_console_log(final_log.into());
-                                ui.global::<InstallerLogic>().set_install_failed(true);
-                            }
-                        }
-                    }
-                })
-                .unwrap();
-            });
-        },
-    );
-
-    // Standard partition fetch
-    let ui_handle_fetch = ui.as_weak();
-    ui.global::<InstallerLogic>()
+        let ui_handle_fetch = ui.as_weak();
+        ui.global::<InstallerLogic>()
         .on_fetch_partitions(move |disk| {
-            let pure_disk_path = disk
-                .as_str()
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .to_string();
-            let (parts, avail) = scan_partitions(&pure_disk_path);
-
+            let pure = disk.as_str().split_whitespace().next().unwrap_or("");
+            let (parts, avail) = scan_partitions(pure);
             if let Some(ui) = ui_handle_fetch.upgrade() {
                 ui.global::<InstallerLogic>()
-                    .set_current_partitions(ModelRc::from(Rc::new(VecModel::from(parts))));
+                .set_current_partitions(ModelRc::from(Rc::new(VecModel::from(parts))));
                 ui.set_available_partitions(ModelRc::from(Rc::new(VecModel::from(avail))));
             }
         });
 
-    // Network check
-    let ui_handle_net = ui.as_weak();
-    ui.global::<InstallerLogic>()
+        let ui_handle_net = ui.as_weak();
+        ui.global::<InstallerLogic>()
         .on_check_network_and_proceed(move |mode| {
             let ui_handle = ui_handle_net.clone();
             let mode_str = mode.to_string();
@@ -509,506 +496,278 @@ fn main() -> Result<(), slint::PlatformError> {
 
                 if is_online {
                     let status = Command::new("ping")
-                        .arg("-c")
-                        .arg("1")
-                        .arg("-W")
-                        .arg("2")
-                        .arg("archlinux.org")
-                        .status();
+                    .args(["-c", "1", "-W", "2", "archlinux.org"])
+                    .status();
                     if status.is_err() || !status.unwrap().success() {
                         needs_wifi = true;
                     }
                 }
 
-                slint::invoke_from_event_loop(move || {
+                let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_handle.upgrade() {
-                        if needs_wifi {
-                            ui.set_has_ethernet(false);
-                            ui.set_active_step(2);
-                        } else {
-                            ui.set_has_ethernet(true);
-                            ui.set_active_step(3);
-                        }
+                        ui.set_has_ethernet(!needs_wifi);
+                        ui.set_active_step(if needs_wifi { 2 } else { 3 });
                     }
-                })
-                .unwrap();
+                });
             });
         });
 
-    // WiFi rescan
-    let ui_handle_wifi = ui.as_weak();
-    ui.global::<InstallerLogic>().on_rescan_wifi(move || {
-        let ui_handle = ui_handle_wifi.clone();
-        thread::spawn(move || {
-            let iface_output = Command::new("sh")
-                .arg("-c")
-                .arg("iw dev | awk '$1==\"Interface\"{print $2}' | head -n 1")
-                .output();
-            if let Ok(out) = iface_output {
-                let iface = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !iface.is_empty() {
-                    let _ = Command::new("iwctl")
-                        .arg("station")
-                        .arg(&iface)
-                        .arg("scan")
-                        .status();
-                    thread::sleep(Duration::from_secs(2));
-
-                    let nets_output = Command::new("sh")
-                        .arg("-c")
-                        .arg(format!(
-                            "iwctl station {} get-networks | awk 'NR>4 {{print $2}}'",
-                            iface
-                        ))
-                        .output();
-                    if let Ok(net_out) = nets_output {
-                        let stdout = String::from_utf8_lossy(&net_out.stdout);
-                        let mut net_list: Vec<SharedString> = Vec::new();
-                        for net in stdout.lines() {
-                            let clean_net = net.trim();
-                            if !clean_net.is_empty() {
-                                net_list.push(clean_net.into());
-                            }
-                        }
-                        if !net_list.is_empty() {
-                            slint::invoke_from_event_loop(move || {
-                                if let Some(ui) = ui_handle.upgrade() {
-                                    let net_model = Rc::new(VecModel::from(net_list));
-                                    ui.set_available_networks(ModelRc::from(net_model.clone()));
+        let ui_handle_wifi = ui.as_weak();
+        ui.global::<InstallerLogic>().on_rescan_wifi(move || {
+            let ui_handle = ui_handle_wifi.clone();
+            thread::spawn(move || {
+                if let Ok(out) = Command::new("sh")
+                    .arg("-c")
+                    .arg("iw dev | awk '$1==\"Interface\"{print $2}' | head -n 1")
+                    .output()
+                    {
+                        let iface = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        if !iface.is_empty() {
+                            let _ = Command::new("iwctl")
+                            .args(["station", &iface, "scan"])
+                            .status();
+                            thread::sleep(Duration::from_secs(2));
+                            if let Ok(net_out) = Command::new("sh")
+                                .arg("-c")
+                                .arg(format!(
+                                    "iwctl station {} get-networks | awk 'NR>4 {{print $2}}'",
+                                    iface
+                                ))
+                                .output()
+                                {
+                                    let stdout = String::from_utf8_lossy(&net_out.stdout);
+                                    let net_list: Vec<SharedString> = stdout
+                                    .lines()
+                                    .map(|s| s.trim())
+                                    .filter(|s| !s.is_empty())
+                                    .map(SharedString::from)
+                                    .collect();
+                                    if !net_list.is_empty() {
+                                        let _ = slint::invoke_from_event_loop(move || {
+                                            if let Some(ui) = ui_handle.upgrade() {
+                                                ui.set_available_networks(ModelRc::from(Rc::new(
+                                                    VecModel::from(net_list),
+                                                )));
+                                            }
+                                        });
+                                    }
                                 }
-                            })
-                            .unwrap();
                         }
                     }
-                }
-            }
+            });
         });
-    });
 
-    // WiFi connect
-    let ui_handle_connect = ui.as_weak();
-    ui.global::<InstallerLogic>()
+        let ui_handle_connect = ui.as_weak();
+        ui.global::<InstallerLogic>()
         .on_connect_wifi(move |ssid, password| {
             let ui_handle = ui_handle_connect.clone();
             let ssid_str = ssid.to_string();
             let pass_str = password.to_string();
 
             thread::spawn(move || {
-                let iface_output = Command::new("sh")
+                if let Ok(out) = Command::new("sh")
                     .arg("-c")
                     .arg("iw dev | awk '$1==\"Interface\"{print $2}' | head -n 1")
-                    .output();
-                if let Ok(out) = iface_output {
-                    let iface = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    if !iface.is_empty() {
-                        if pass_str.is_empty() {
-                            let _ = Command::new("iwctl")
-                                .arg("station")
-                                .arg(&iface)
-                                .arg("connect")
-                                .arg(&ssid_str)
+                    .output()
+                    {
+                        let iface = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        if !iface.is_empty() {
+                            if pass_str.is_empty() {
+                                let _ = Command::new("iwctl")
+                                .args(["station", &iface, "connect", &ssid_str])
                                 .status();
-                        } else {
-                            let _ = Command::new("iwctl")
-                                .arg("station")
-                                .arg(&iface)
-                                .arg("connect")
-                                .arg(&ssid_str)
-                                .arg("--passphrase")
-                                .arg(&pass_str)
+                            } else {
+                                let _ = Command::new("iwctl")
+                                .args([
+                                    "station",
+                                    &iface,
+                                    "connect",
+                                    &ssid_str,
+                                    "--passphrase",
+                                    &pass_str,
+                                ])
                                 .status();
+                            }
+                            thread::sleep(Duration::from_secs(4));
                         }
-                        thread::sleep(Duration::from_secs(4));
                     }
-                }
-
-                slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = ui_handle.upgrade() {
-                        ui.set_active_step(3);
-                    }
-                })
-                .unwrap();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_handle.upgrade() {
+                            ui.set_active_step(3);
+                        }
+                    });
             });
         });
 
-    ui.global::<InstallerLogic>().on_reboot_system(move || {
-        let _ = Command::new("systemctl").arg("reboot").spawn();
-    });
+        ui.global::<InstallerLogic>().on_reboot_system(move || {
+            let _ = Command::new("systemctl").arg("reboot").spawn();
+        });
 
-    ui.global::<InstallerLogic>().on_poweroff_system(move || {
-        let _ = Command::new("systemctl").arg("poweroff").spawn();
-    });
+        ui.global::<InstallerLogic>().on_poweroff_system(move || {
+            let _ = Command::new("systemctl").arg("poweroff").spawn();
+        });
 
-    ui.global::<InstallerLogic>().on_close_installer(move || {
-        std::process::exit(1);
-    });
+        ui.global::<InstallerLogic>().on_close_installer(move || {
+            std::process::exit(0);
+        });
 
-    let ui_handle_gparted = ui.as_weak();
-    ui.global::<InstallerLogic>()
+        let ui_handle_gparted = ui.as_weak();
+        ui.global::<InstallerLogic>()
         .on_launch_gparted(move |disk| {
             let ui_handle = ui_handle_gparted.clone();
-            let pure_disk_path = disk
-                .as_str()
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .to_string();
+            let pure = disk
+            .as_str()
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_string();
 
             thread::spawn(move || {
-                let _ = Command::new("gparted").arg(&pure_disk_path).status();
-                let (parts, avail) = scan_partitions(&pure_disk_path);
+                let _ = Command::new("gparted").arg(&pure).status();
+                let (parts, avail) = scan_partitions(&pure);
 
-                slint::invoke_from_event_loop(move || {
+                let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_handle.upgrade() {
                         ui.global::<InstallerLogic>()
-                            .set_current_partitions(ModelRc::from(Rc::new(VecModel::from(parts))));
+                        .set_current_partitions(ModelRc::from(Rc::new(VecModel::from(parts))));
                         ui.set_available_partitions(ModelRc::from(Rc::new(VecModel::from(avail))));
                     }
-                })
-                .unwrap();
+                });
             });
         });
 
-    // Standard deployment
-    let ui_handle = ui.as_weak();
-    ui.global::<InstallerLogic>().on_start_install(
-        move |target_disk,
-              install_mode,
-              part_strategy,
-              filesystem,
-              replace_path,
-              gui_root_part,
-              gui_efi_part,
-              hostname,
-              username,
-              password,
-              root_password,
-              browser,
-              perf,
-              selected_de,
-              selected_boot| {
-            let ui_handle = ui_handle.clone();
+        let ui_handle_install = ui.as_weak();
+        ui.global::<InstallerLogic>().on_start_install(
+            move |target_disk,
+            install_mode,
+            part_strategy,
+            filesystem,
+            replace_path,
+            gui_root_part,
+            gui_efi_part,
+            hostname,
+            username,
+            password,
+            root_password,
+            browser,
+            perf,
+            selected_de,
+            selected_boot| {
+                let ui_handle = ui_handle_install.clone();
 
-            let pure_disk_path = target_disk
+                let (timezone, locale, keymap) = if let Some(ui) = ui_handle.upgrade() {
+                    let logic = ui.global::<InstallerLogic>();
+                    (
+                        logic.get_selected_timezone().to_string(),
+                     logic.get_selected_locale().to_string(),
+                     logic.get_selected_keymap().to_string(),
+                    )
+                } else {
+                    ("UTC".into(), "en_US.UTF-8".into(), "us".into())
+                };
+
+                let pure_disk = target_disk
                 .as_str()
                 .split_whitespace()
                 .next()
                 .unwrap_or("")
                 .to_string();
-            let mode_num = install_mode
+
+                let mode = if install_mode.as_str().starts_with('1') {
+                    InstallMode::Online
+                } else {
+                    InstallMode::Offline
+                };
+
+                let strategy = if part_strategy.as_str().starts_with('2') {
+                    PartitionStrategy::ReplacePartition
+                } else if part_strategy.as_str().starts_with('3') {
+                    PartitionStrategy::ManualGParted
+                } else {
+                    PartitionStrategy::WipeDisk
+                };
+
+                let de_index: u8 = selected_de
                 .as_str()
                 .split('.')
                 .next()
-                .unwrap_or("2")
-                .to_string();
-            let part_num = part_strategy
-                .as_str()
-                .split('.')
-                .next()
-                .unwrap_or("1")
-                .to_string();
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(1);
 
-            let fs_str = filesystem.as_str().to_string();
-            let replace_str = replace_path.as_str().to_string();
+                let browser_index: u8 = if mode == InstallMode::Offline {
+                    5
+                } else if browser.as_str().contains("Zen") {
+                    1
+                } else if browser.as_str().contains("LibreWolf") {
+                    2
+                } else if browser.as_str().contains("Firefox") {
+                    3
+                } else if browser.as_str().contains("Brave") {
+                    4
+                } else {
+                    5
+                };
 
-            let mut root_part_str = gui_root_part.as_str().to_string();
-            if root_part_str.contains("Select") {
-                root_part_str = "".to_string();
-            }
+                let bootloader = if selected_boot.as_str().contains("Limine") {
+                    BootloaderType::Limine
+                } else if selected_boot.as_str().contains("rEFInd") {
+                    BootloaderType::Refind
+                } else if selected_boot.as_str().contains("systemd-boot") {
+                    BootloaderType::SystemdBoot
+                } else {
+                    BootloaderType::Grub
+                };
 
-            let mut efi_part_str = gui_efi_part.as_str().to_string();
-            if efi_part_str.contains("Select") {
-                efi_part_str = "".to_string();
-            }
+                let hw = probe_hardware_topology(&pure_disk);
 
-            let host_str = hostname.as_str().to_string();
-            let user_str = username.as_str().to_string();
-            let pass_str = password.as_str().to_string();
-            let root_pass_str = root_password.as_str().to_string();
+                let manifest = DeploymentManifest {
+                    target_disk: pure_disk.clone(),
+                                                       mode,
+                                                       strategy,
+                                                       requested_filesystem: filesystem.to_string(),
+                                                       replace_partition: replace_path.to_string(),
+                                                       manual_root_partition: gui_root_part.to_string(),
+                                                       manual_efi_partition: gui_efi_part.to_string(),
+                                                       hostname: hostname.to_string(),
+                                                       username: username.to_string(),
+                                                       user_password: password.to_string(),
+                                                       root_password: if root_password.is_empty() {
+                                                           password.to_string()
+                                                       } else {
+                                                           root_password.to_string()
+                                                       },
+                                                       timezone: timezone.clone(),
+                                                       locale: locale.clone(),
+                                                       keymap: keymap.clone(),
+                                                       desktop_index: de_index,
+                                                       browser_index,
+                                                       bootloader,
+                                                       hyper_performance: perf.as_str().starts_with('Y'),
+                                                       hardware: hw.clone(),
+                };
 
-            let perf_char = if perf.as_str().starts_with('Y') {
-                "Y"
-            } else {
-                "N"
-            };
-            let de_num = selected_de
-                .as_str()
-                .split('.')
-                .next()
-                .unwrap_or("1")
-                .to_string();
+                let (tx, rx) = mpsc::channel();
+                attach_telemetry_stream(
+                    rx,
+                    ui_handle,
+                    vec![
+                        "> Kestrel Pure-Rust Provisioning Engine engaged.".into(),
+                                        format!(
+                                            "> CPU: {} ({}) | Threads: {} | RAM: {} MB",
+                                                hw.cpu_vendor, hw.uarch_level, hw.cpu_threads, hw.total_ram_mb
+                                        ),
+                                        format!(
+                                            "> Regional: TZ={} | Locale={} | Keymap={}",
+                                            timezone, locale, keymap
+                                        ),
+                    ],
+                );
 
-            let browser_str = browser.as_str();
-            let mut browser_num = if browser_str.contains("Zen") {
-                "1"
-            } else if browser_str.contains("LibreWolf") {
-                "2"
-            } else if browser_str.contains("Firefox") {
-                "3"
-            } else if browser_str.contains("Brave") {
-                "4"
-            } else {
-                "5"
-            }
-            .to_string();
+                thread::spawn(move || {
+                    engine::execute_deployment(manifest, tx);
+                });
+            },
+        );
 
-            let boot_str = selected_boot.as_str();
-            let boot_num = if boot_str.contains("Limine") {
-                "4"
-            } else if boot_str.contains("rEFInd") {
-                "3"
-            } else if boot_str.contains("systemd-boot") {
-                "2"
-            } else {
-                "1"
-            }
-            .to_string();
-
-            if mode_num == "2" {
-                browser_num = "5".to_string();
-            }
-
-            thread::spawn(move || {
-                let mut child = Command::new("bash")
-                    .arg("-c")
-                    .arg("/usr/local/bin/install.sh 2>&1")
-                    .env("TARGET_DISK", &pure_disk_path)
-                    .env("INSTALL_MODE", &mode_num)
-                    .env("PARTITION_STRATEGY", &part_num)
-                    .env("GUI_FILESYSTEM", &fs_str)
-                    .env("GUI_REPLACE_PART", &replace_str)
-                    .env("GUI_ROOT_PART", &root_part_str)
-                    .env("GUI_EFI_PART", &efi_part_str)
-                    .env("GUI_HOSTNAME", &host_str)
-                    .env("GUI_USERNAME", &user_str)
-                    .env("GUI_PASSWORD", &pass_str)
-                    .env("GUI_ROOT_PASSWORD", &root_pass_str)
-                    .env("BROWSER_CHOICE", &browser_num)
-                    .env("PERF_CHOICE", &perf_char)
-                    .env("DE_CHOICE", &de_num)
-                    .env("BOOT_CHOICE", &boot_num)
-                    .env("NON_INTERACTIVE", "1")
-                    .stdout(Stdio::piped())
-                    .spawn()
-                    .expect("Failed to execute Kestrel bash script");
-
-                let mut stdout = child.stdout.take().expect("Failed to capture stdout");
-                let mut buffer = [0u8; 128];
-                let mut current_line = String::new();
-                let mut in_ansi = false;
-
-                let mut current_progress: f32 = 0.0;
-                let mut dynamic_status_text = String::new();
-
-                let mut total_packages: f32 = 0.0;
-                let mut downloaded_count: f32 = 0.0;
-
-                let mut log_lines: Vec<String> = vec![
-                    "> Initiating Kestrel Arch Deployment Protocol...".to_string(),
-                    "> Reading configuration matrix...".to_string(),
-                ];
-
-                let mut last_ui_update = Instant::now();
-                let update_interval = Duration::from_millis(32);
-
-                loop {
-                    match stdout.read(&mut buffer) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let chunk = String::from_utf8_lossy(&buffer[..n]);
-
-                            for c in chunk.chars() {
-                                if in_ansi {
-                                    if c.is_ascii_alphabetic() {
-                                        in_ansi = false;
-                                    }
-                                    continue;
-                                }
-
-                                match c {
-                                    '\n' => {
-                                        let output = current_line.trim();
-                                        let mut is_package_spam = false;
-
-                                        if output.contains("Formatting")
-                                            || output.contains("partition")
-                                        {
-                                            current_progress = 0.10;
-                                        } else if output.contains("Packages (")
-                                            && output.contains(')')
-                                        {
-                                            let text_after =
-                                                output.split("Packages (").nth(1).unwrap_or("");
-                                            let num_str =
-                                                text_after.split(')').next().unwrap_or("");
-                                            if let Ok(total) = num_str.parse::<f32>() {
-                                                total_packages = total;
-                                                dynamic_status_text = format!(
-                                                    "Preparing to download {} packages...",
-                                                    total
-                                                );
-                                                is_package_spam = true;
-                                            }
-                                        } else if output.ends_with(" downloading...") {
-                                            downloaded_count += 1.0;
-                                            if total_packages > 0.0 {
-                                                let ratio =
-                                                    (downloaded_count / total_packages).min(1.0);
-                                                current_progress = 0.15 + (0.35 * ratio);
-                                                dynamic_status_text = format!(
-                                                    "Downloading packages... ({}/{})",
-                                                    downloaded_count as u32,
-                                                    total_packages as u32
-                                                );
-                                            }
-                                            is_package_spam = true;
-                                        } else if output.contains("checking package integrity")
-                                            || output.contains("checking keyring")
-                                            || output.contains("resolving dependencies")
-                                        {
-                                            current_progress = 0.50;
-                                            dynamic_status_text = output.to_string();
-                                            is_package_spam = true;
-                                        } else if output.starts_with('(')
-                                            && output.contains('/')
-                                            && output.contains(')')
-                                        {
-                                            let bracket_part =
-                                                output.split(')').next().unwrap_or("");
-                                            let nums: String = bracket_part
-                                                .chars()
-                                                .filter(|c| c.is_ascii_digit() || *c == '/')
-                                                .collect();
-                                            let num_parts: Vec<&str> = nums.split('/').collect();
-
-                                            if num_parts.len() == 2 {
-                                                if let (Ok(current), Ok(total)) = (
-                                                    num_parts[0].parse::<f32>(),
-                                                    num_parts[1].parse::<f32>(),
-                                                ) {
-                                                    if total > 0.0 && current <= total {
-                                                        current_progress =
-                                                            0.50 + (0.40 * (current / total));
-                                                        is_package_spam = true;
-                                                        dynamic_status_text = output.to_string();
-                                                    }
-                                                }
-                                            }
-                                        } else if output.contains("bootloader")
-                                            || output.contains("grub")
-                                            || output.contains("limine")
-                                        {
-                                            current_progress = 0.95;
-                                        }
-
-                                        if !output.is_empty() {
-                                            if !is_package_spam && !output.contains("Packages (") {
-                                                log_lines.push(format!("> {}", output));
-                                            }
-                                            if !is_package_spam {
-                                                dynamic_status_text = output.to_string();
-                                            }
-                                        }
-                                        current_line.clear();
-                                    }
-                                    '\r' => {
-                                        current_line.clear();
-                                    }
-                                    '\x08' => {
-                                        current_line.pop();
-                                    }
-                                    '\x1B' => {
-                                        in_ansi = true;
-                                    }
-                                    _ => {
-                                        if !c.is_control() {
-                                            current_line.push(c);
-                                        }
-                                    }
-                                }
-                            }
-
-                            if last_ui_update.elapsed() >= update_interval {
-                                let mut display_log = log_lines.clone();
-                                let active_line = current_line.trim();
-
-                                if !active_line.is_empty() {
-                                    display_log.push(format!("> {}", active_line));
-                                }
-
-                                if display_log.len() > 100 {
-                                    let excess = display_log.len() - 100;
-                                    display_log.drain(0..excess);
-                                }
-
-                                let log_update = display_log.join("\n");
-
-                                let status_text = if !active_line.is_empty() {
-                                    active_line.to_string()
-                                } else if !dynamic_status_text.is_empty() {
-                                    dynamic_status_text.clone()
-                                } else {
-                                    log_lines
-                                        .last()
-                                        .unwrap_or(&String::new())
-                                        .replace("> ", "")
-                                };
-
-                                slint::invoke_from_event_loop({
-                                    let ui_handle = ui_handle.clone();
-                                    move || {
-                                        if let Some(ui) = ui_handle.upgrade() {
-                                            ui.global::<InstallerLogic>()
-                                                .set_status_text(status_text.into());
-                                            ui.global::<InstallerLogic>()
-                                                .set_progress(current_progress);
-                                            ui.global::<InstallerLogic>()
-                                                .set_console_log(log_update.into());
-                                        }
-                                    }
-                                })
-                                .unwrap();
-
-                                last_ui_update = Instant::now();
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-
-                let status = child.wait().expect("Failed to wait on backend process");
-
-                if !status.success() {
-                    log_lines.push(
-                        "\n[!] CRITICAL FAULT: Deployment process exited with a non-zero status code. Read logs above for details."
-                            .to_string(),
-                    );
-                }
-
-                let final_log = log_lines.join("\n");
-
-                slint::invoke_from_event_loop({
-                    let ui_handle = ui_handle.clone();
-                    move || {
-                        if let Some(ui) = ui_handle.upgrade() {
-                            if status.success() {
-                                ui.global::<InstallerLogic>().set_progress(1.0);
-                                ui.set_active_step(99);
-                            } else {
-                                ui.global::<InstallerLogic>().set_status_text(
-                                    "Installation failed! Check console output.".into(),
-                                );
-                                ui.global::<InstallerLogic>()
-                                    .set_console_log(final_log.into());
-                                ui.global::<InstallerLogic>().set_install_failed(true);
-                            }
-                        }
-                    }
-                })
-                .unwrap();
-            });
-        },
-    );
-
-    ui.run()
+        ui.run()
 }

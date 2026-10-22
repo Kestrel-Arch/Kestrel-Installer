@@ -34,33 +34,21 @@ fi
 
 echo "Select Deployment Interface:"
 echo " [1] Graphical Installer & Rescue Engine (Slint GUI & GParted on Wayland)"
-echo " [2] Headless CLI Installer (Pure Terminal)"
-echo " [3] Headless CLI System Repair (In-Place Rescue)"
+echo " [2] Headless CLI System Repair (In-Place Rescue)"
 echo "----------------------------------------------------------"
 while true; do
-    read -r -p "Choice (1-3): " UI_CHOICE
-    if [[ "$UI_CHOICE" =~ ^[1-3]$ ]]; then break; else echo "[WARNING] Invalid choice."; fi
+    read -r -p "Choice (1-2): " UI_CHOICE
+    if [[ "$UI_CHOICE" =~ ^[1-2]$ ]]; then break; else echo "[WARNING] Invalid choice."; fi
 done
 
-echo "=> Fetching Kestrel Backend & Recovery Engines..."
+echo "=> Maximizing Live RAM-disk capacity..."
+mount -o remount,size=4G /run/archiso/cowspace 2>/dev/null || true
+
 mkdir -p /usr/local/bin
-
-curl -fL -# --retry 5 --retry-all-errors \
-    "https://raw.githubusercontent.com/${GITHUB_REPO}/refs/heads/main/airootfs/usr/local/bin/install.sh" \
-    -o /usr/local/bin/install.sh
-sed -i 's/\r$//' /usr/local/bin/install.sh
-chmod +x /usr/local/bin/install.sh
-
-curl -fL -# --retry 5 --retry-all-errors \
-    "https://raw.githubusercontent.com/${GITHUB_REPO}/refs/heads/main/airootfs/usr/local/bin/kestrel-repair.sh" \
-    -o /usr/local/bin/kestrel-repair.sh
-sed -i 's/\r$//' /usr/local/bin/kestrel-repair.sh
-chmod +x /usr/local/bin/kestrel-repair.sh
-sync
+rm -f /usr/local/bin/kestrel-gui
 
 if [ "$UI_CHOICE" = "1" ]; then
     echo "=> Initializing Graphical Environment in Live RAM..."
-    mount -o remount,size=4G /run/archiso/cowspace 2>/dev/null || true
 
     pacman-key --init >/dev/null 2>&1 || true
     pacman-key --populate archlinux >/dev/null 2>&1 || true
@@ -72,14 +60,13 @@ if [ "$UI_CHOICE" = "1" ]; then
     rm -rf /var/cache/pacman/pkg/*
 
     echo "=> Installing Wayland, Cage, and UI Dependencies..."
-    pacman -S --noconfirm --needed --overwrite "*" cage wayland gparted polkit ttf-liberation pciutils
+    pacman -S --noconfirm --needed --overwrite "*" cage wayland gparted polkit ttf-liberation pciutils btrfs-progs dosfstools e2fsprogs xfsprogs
 
     echo "=> Clearing final package cache & sync databases..."
     rm -rf /var/cache/pacman/pkg/*
     rm -rf /var/lib/pacman/sync/*
 
-    echo "=> Fetching Kestrel GUI Binary..."
-    rm -f /usr/local/bin/kestrel-gui
+    echo "=> Fetching Kestrel Rust Engine & GUI Binary..."
     curl -fL -# --retry 5 --retry-all-errors --retry-delay 3 -C - \
         "https://github.com/${GITHUB_REPO}/releases/download/latest-gui/kestrel-gui" \
         -o /usr/local/bin/kestrel-gui
@@ -105,12 +92,14 @@ if [ "$UI_CHOICE" = "1" ]; then
 
     echo "=> Launching Kestrel GUI..."
     exec cage -s -- /usr/local/bin/kestrel-gui
-elif [ "$UI_CHOICE" = "2" ]; then
-    echo "=> Launching Headless CLI Engine..."
-    export NON_INTERACTIVE=0
-    export INSTALL_MODE="1"
-    exec /usr/local/bin/install.sh
 else
+    echo "=> Fetching Kestrel Rust Engine Binary..."
+    curl -fL -# --retry 5 --retry-all-errors --retry-delay 3 -C - \
+        "https://github.com/${GITHUB_REPO}/releases/download/latest-gui/kestrel-gui" \
+        -o /usr/local/bin/kestrel-gui
+    sync
+    chmod +x /usr/local/bin/kestrel-gui
+
     echo "=> Launching In-Place CLI Recovery..."
     lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT
     read -r -p "Enter root partition (e.g. /dev/nvme0n1p2): " R_PART
@@ -118,5 +107,5 @@ else
     read -r -p "Enter Kernel (linux/linux-cachyos): " R_KERN
     read -r -p "Enter Bootloader (GRUB/Limine/systemd-boot/rEFInd): " R_BL
     read -r -p "Enter EFI partition (or leave blank for BIOS): " R_EFI
-    exec /usr/local/bin/kestrel-repair.sh "$R_PART" "$R_OS" "$R_KERN" "$R_BL" "$R_EFI"
+    exec /usr/local/bin/kestrel-gui --repair "$R_PART" "$R_OS" "$R_KERN" "$R_BL" "$R_EFI"
 fi

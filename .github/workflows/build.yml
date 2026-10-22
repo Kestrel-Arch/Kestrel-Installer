@@ -24,10 +24,10 @@ concurrency:
 jobs:
   build-archiso:
     runs-on: ubuntu-latest
-    
+
     permissions:
       contents: write
-      
+
     container:
       image: archlinux:latest
       options: --privileged
@@ -43,7 +43,7 @@ jobs:
             git archiso wget gawk mtools dosfstools erofs-utils squashfs-tools \
             pacman-contrib rustup base-devel cmake pkgconf freetype2 fontconfig \
             libx11 libxkbcommon libxcb wayland openssh rsync github-cli python-pip zstd tar
-          
+
           rustup default stable
 
       - name: Checkout Repository
@@ -60,7 +60,7 @@ jobs:
         run: |
           mkdir -p airootfs/opt/offline_cache
           mkdir -p /tmp/empty_db/local
-          
+
           pacman-key --recv-key 3056513887B78AEB --keyserver hkps://keyserver.ubuntu.com
           pacman-key --lsign-key 3056513887B78AEB
           pacman -U --noconfirm \
@@ -93,7 +93,7 @@ jobs:
           mkdir -p airootfs/gui-src/ui/fonts
           cp Geomini.ttf airootfs/gui-src/ui/fonts/ 2>/dev/null || true
           cp CascadiaCode.ttf airootfs/gui-src/ui/fonts/ 2>/dev/null || true
-          
+
           cd airootfs/gui-src
           cargo build --release
 
@@ -101,20 +101,18 @@ jobs:
         run: |
           cp -r /usr/share/archiso/configs/releng /tmp/kestrel_profile
           echo -e "\n[chaotic-aur]\nSigLevel = Optional TrustAll\nInclude = /etc/pacman.d/chaotic-mirrorlist" >> /tmp/kestrel_profile/pacman.conf
-          
+
           echo -e "zsh\ncage\nkitty\nmesa\nttf-dejavu\npolkit\npciutils\nxorg-xwayland\nparted\nbtrfs-progs\ndosfstools\nntfs-3g\ne2fsprogs\nxfsprogs\ngparted\nchaotic-keyring\nchaotic-mirrorlist" >> /tmp/kestrel_profile/packages.x86_64
 
           mkdir -p /tmp/kestrel_profile/airootfs/usr/local/bin
           mkdir -p /tmp/kestrel_profile/airootfs/root
-          
-          sed 's/\r$//' airootfs/usr/local/bin/install.sh > /tmp/kestrel_profile/airootfs/usr/local/bin/install.sh
-          sed 's/\r$//' airootfs/usr/local/bin/kestrel-repair.sh > /tmp/kestrel_profile/airootfs/usr/local/bin/kestrel-repair.sh
+
           cp airootfs/gui-src/target/release/kestrel-gui /tmp/kestrel_profile/airootfs/usr/local/bin/kestrel-gui
-          
+
           sed -i 's/^iso_name=.*/iso_name="Kestrel-Arch(offline)"/' /tmp/kestrel_profile/profiledef.sh
-          
-          sed -i '/file_permissions=(/a \  ["/usr/local/bin/install.sh"]="0:0:755"\n  ["/usr/local/bin/kestrel-repair.sh"]="0:0:755"\n  ["/usr/local/bin/kestrel-gui"]="0:0:755"' /tmp/kestrel_profile/profiledef.sh
-          
+
+          sed -i '/file_permissions=(/a \  ["/usr/local/bin/kestrel-gui"]="0:0:755"' /tmp/kestrel_profile/profiledef.sh
+
           sed -i 's/^compressor=.*/compressor="zstd"/' /tmp/kestrel_profile/profiledef.sh
 
           {
@@ -149,29 +147,29 @@ jobs:
           HF_REPO: ${{ secrets.HF_REPO_OFFLINE }}
         run: |
           pip install huggingface_hub --break-system-packages
-          
+
           ISO_FILE=$(ls out/*.iso 2>/dev/null | head -n 1)
           if [ -z "$ISO_FILE" ]; then
             echo "ERROR: No ISO file found in out/"
             exit 1
           fi
           ISO_NAME=$(basename "$ISO_FILE")
-          
+
           python -c "
           import os
           from huggingface_hub import HfApi
-          
+
           api = HfApi(token=os.environ['HF_TOKEN'])
           repo = os.environ['HF_REPO']
           iso_path = '$ISO_FILE'
           iso_name = '$ISO_NAME'
-          
+
           try:
               api.delete_repo(repo_id=repo, repo_type='dataset')
               print(f'Deleted old {repo}')
           except Exception as e:
               print(f'Repo did not exist or could not be deleted: {e}')
-              
+
           api.create_repo(repo_id=repo, repo_type='dataset', private=False)
           print(f'Uploading {iso_name} directly to {repo}...')
           api.upload_file(
@@ -190,15 +188,15 @@ jobs:
           HF_REPO: ${{ secrets.HF_REPO_OFFLINE }}
         run: |
           ISO_FILE=$(basename $(ls out/*.iso 2>/dev/null | head -n 1))
-          
+
           DOWNLOAD_URL="https://huggingface.co/datasets/${HF_REPO}/resolve/main/${ISO_FILE}?download=true"
           RELEASE_TAG="latest-iso"
-          
+
           git config --global --add safe.directory '*' || true
-          
+
           CHANGELOG=$(git log -10 --pretty=format:"- %s" -- airootfs/ 2>/dev/null)
           [ -z "$CHANGELOG" ] && CHANGELOG="- Routine updates and maintenance."
-          
+
           {
             echo "### 🦅 Kestrel Arch - Latest Deployment (Offline Installer)"
             echo ""
@@ -211,12 +209,12 @@ jobs:
             echo "---"
             echo "*Updated automatically via GitHub Actions.*"
           } > release_notes.md
-          
+
           gh release delete "$RELEASE_TAG" -y 2>/dev/null || true
-          
+
           git tag -f "$RELEASE_TAG"
           git push origin "$RELEASE_TAG" --force
-          
+
           gh release create "$RELEASE_TAG" \
             --title "Kestrel Arch Latest Offline ISO" \
             --notes-file release_notes.md \
