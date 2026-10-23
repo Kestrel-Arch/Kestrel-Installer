@@ -36,7 +36,7 @@ jobs:
 
       - name: Cache Dioxus CLI
         id: cache-dx
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/dx
           key: ${{ runner.os }}-dioxus-cli-v0.5
