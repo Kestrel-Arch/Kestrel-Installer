@@ -36,10 +36,9 @@ jobs:
       - name: Initialize Arch Keyring & Install Dependencies
         run: |
           cat << 'EOF' > /etc/pacman.d/mirrorlist
-          Server = https://pkgbuild.com
+          Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
           Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch
           Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch
-          Server = https://pkgbuild.com
           EOF
           pacman-key --init
           pacman-key --populate archlinux
@@ -52,8 +51,8 @@ jobs:
           pacman-key --recv-key 3056513887B78AEB --keyserver hkps://keyserver.ubuntu.com
           pacman-key --lsign-key 3056513887B78AEB
           pacman -U --noconfirm \
-            'https://chaotic.cx' \
-            'https://chaotic.cx'
+            'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' \
+            'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst'
 
           rustup default stable
 
@@ -166,7 +165,7 @@ jobs:
         run: |
           ISO_FILE=$(basename $(ls out/*.iso 2>/dev/null | head -n 1))
 
-          DOWNLOAD_URL="https://huggingface.co{HF_REPO}/resolve/main/${ISO_FILE}?download=true"
+          DOWNLOAD_URL="https://huggingface.co/datasets/${HF_REPO}/resolve/main/${ISO_FILE}?download=true"
           RELEASE_TAG="latest-online-iso"
 
           git config --global --add safe.directory '*' || true
