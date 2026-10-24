@@ -1,6 +1,8 @@
 <div align="center">
 
-# 🦅 KESTREL ARCH
+<img src="airootfs/gui-src/ui/logo.svg" alt="Kestrel Arch Logo" width="140" height="140" />
+
+# KESTREL ARCH
 ### Automated, Hardware-Aware Arch Linux Provisioning & Self-Healing Rescue Engine
 
 [![Build Status](https://img.shields.io/github/actions/workflow/status/Kestrel-Arch/Kestrel-Installer/build.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white)](https://github.com/Kestrel-Arch/Kestrel-Installer/actions)
