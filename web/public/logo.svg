@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="100%" height="100%">
+  <defs>
+    <!-- Arch Triangle Gradients -->
+    <linearGradient id="archLeft" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2297d5" />
+      <stop offset="100%" stop-color="#1982bc" />
+    </linearGradient>
+    <linearGradient id="archRight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1476ad" />
+      <stop offset="100%" stop-color="#1c88c4" />
+    </linearGradient>
+    <linearGradient id="archInnerRight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d426b" />
+      <stop offset="100%" stop-color="#0a3556" />
+    </linearGradient>
+
+    <!-- Kestrel Gradients -->
+    <linearGradient id="slateDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#334152" />
+      <stop offset="100%" stop-color="#434d59" />
+    </linearGradient>
+    <linearGradient id="wingBlue" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3b6992" />
+      <stop offset="100%" stop-color="#4877a1" />
+    </linearGradient>
+    <linearGradient id="bellyTan" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a59d96" />
+      <stop offset="100%" stop-color="#8d847c" />
+    </linearGradient>
+  </defs>
+
+  <!-- ==================== ARCH LINUX TRIANGLE ==================== -->
+  <!-- Top Peak Left Facet -->
+  <polygon points="485,130 383,328 485,388" fill="url(#archLeft)" />
+  <!-- Top Peak Right Facet -->
+  <polygon points="485,130 485,388 558,490 666,473" fill="url(#archRight)" />
+
+  <!-- Bottom-Left Leg -->
+  <polygon points="274,530 68,902 382,638 338,554" fill="url(#archLeft)" />
+  <polygon points="68,902 222,772 288,615" fill="#1778b0" />
+
+  <!-- Bottom-Right Leg (Dark Inner Shadow & Outer Blue) -->
+  <polygon points="562,718 648,655 734,869 592,825" fill="url(#archInnerRight)" />
+  <polygon points="648,655 733,596 838,786 725,745 872,848 930,952 734,869" fill="url(#archRight)" />
+
+  <!-- ==================== THE KESTREL ==================== -->
+  <!-- Main Dark Slate Silhouette / Base Frame -->
+  <path d="M 45,155 
+           L 480,406 
+           L 552,515 
+           L 675,495 
+           C 720,502 752,525 768,555 
+           C 774,568 773,582 770,592 
+           C 755,578 738,576 716,584 
+           L 592,690 
+           L 405,752 
+           L 377,828 
+           L 285,852 
+           L 42,952 
+           L 412,642 
+           L 343,530 
+           L 426,552 
+           C 295,515 195,478 142,415 
+           L 395,495 
+           C 245,425 125,365 70,275 
+           L 365,428 
+           C 210,335 90,260 45,155 Z" 
+        fill="url(#slateDark)" />
+
+  <!-- Inner Wing Blue Facets -->
+  <polygon points="338,348 465,425 574,552 465,632 485,595 446,606 456,574" fill="url(#wingBlue)" />
+  <polygon points="392,732 508,595 574,552 435,705" fill="#325c82" />
+  <polygon points="556,535 668,515 620,552 574,552" fill="#2980b9" />
+
+  <!-- Breast, Neck & Head Tan Facets -->
+  <!-- Upper Throat / Cheek with Falcon Malar Stripe Cutout -->
+  <path d="M 574,552 
+           L 668,515 
+           L 695,542 
+           L 712,535 
+           L 725,522 
+           L 750,545 
+           C 725,548 702,556 680,572 
+           L 574,666 Z" 
+        fill="url(#bellyTan)" />
+
+  <!-- Lower Belly Facet -->
+  <polygon points="392,732 574,552 574,666" fill="#948b84" />
+
+  <!-- Tail Feather Highlights -->
+  <polygon points="105,918 395,680 375,715" fill="#466885" />
+  <polygon points="225,872 385,725 352,785 268,856" fill="#466885" />
+  <polygon points="295,848 360,762 332,838" fill="#9c948d" />
+</svg>

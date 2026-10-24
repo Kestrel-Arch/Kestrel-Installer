@@ -179,21 +179,20 @@ bash<(curl -sL https://kestrel.s.gy/eadxm)
 ```
 
 **Repository Structure:**
-
 ```text
 Kestrel-Installer/
 ├── .github/workflows/          # CI/CD pipelines (Offline/Online ISOs, GUI Releases, Pages)
 ├── airootfs/
-│   ├── gui-src/                # Rust & Slint native source code
-│   │   ├── Cargo.toml          # Rust dependencies & optimization profiles
-│   │   ├── build.rs            # Slint UI compiler build script
-│   │   ├── src/
-│   │   │   ├── main.rs         # Slint UI controller & telemetry channels
-│   │   │   └── engine.rs       # Native Rust provisioning & recovery backend
-│   │   └── ui/
-│   │       ├── installer.slint # Slint interface definitions & styles
-│   │       ├── fonts/          # Embedded typography (Geomini, Cascadia Code)
-│   │       └── logo.png        # Brand assets
+│   └── gui-src/                # Rust & Slint native source code
+│       ├── Cargo.toml          # Rust dependencies & optimization profiles
+│       ├── build.rs            # Slint UI compiler build script
+│       ├── src/
+│       │   ├── main.rs         # Slint UI controller & telemetry channels
+│       │   └── engine.rs       # Native Rust provisioning & recovery backend
+│       └── ui/
+│           ├── installer.slint # Slint interface definitions & styles
+│           ├── fonts/          # Embedded typography (Geomini, Cascadia Code)
+│           └── logo.svg        # Vector brand assets
 ├── web/                        # Dioxus / Wasm landing page source
 ├── bootstrap.sh                # Live ISO environment bootstrapper
 ├── packages.x86_64             # Base live-environment package list

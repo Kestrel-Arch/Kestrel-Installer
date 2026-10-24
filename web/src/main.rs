@@ -11,7 +11,6 @@ fn App() -> Element {
 
     rsx! {
         div { class: "min-h-screen bg-[#020617] text-gray-200 flex flex-col justify-between relative",
-
             // Subtle Ambient Background Glow
             div { class: "pointer-events-none fixed top-0 left-1/2 -translate-x-1/2 w-[900px] h-[450px] bg-cyan-500/10 blur-[140px] rounded-full z-0" }
 
@@ -23,7 +22,7 @@ fn App() -> Element {
                     div { class: "flex items-center gap-3",
                         img {
                             class: "w-8 h-8 object-contain drop-shadow-[0_0_10px_rgba(6,182,212,0.5)]",
-                            src: "logo.png",
+                            src: "logo.svg",
                             alt: "Kestrel Arch Logo"
                         }
                         span { class: "font-bold text-white tracking-widest text-sm", "KESTREL ARCH" }
@@ -31,7 +30,6 @@ fn App() -> Element {
                             "ROLLING • RUST + SLINT"
                         }
                     }
-
                     nav { class: "hidden md:flex items-center gap-7 text-sm font-medium text-gray-400",
                         a { class: "hover:text-cyan-300 transition-colors", href: "#recovery", "Recovery Engine" }
                         a { class: "hover:text-cyan-300 transition-colors", href: "#architecture", "Architecture" }
@@ -46,7 +44,7 @@ fn App() -> Element {
                             class: "px-3.5 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500 hover:text-black font-semibold transition-all",
                             href: "https://github.com/Kestrel-Arch/Kestrel-Installer/releases",
                             target: "_blank",
-                            "Releases →"
+                            "Releases ↗"
                         }
                     }
                 }
@@ -61,7 +59,6 @@ fn App() -> Element {
                 // HERO SECTION (PLEXO-INSPIRED SPLIT LAYOUT)
                 // ------------------------------------------
                 section { class: "grid grid-cols-1 lg:grid-cols-12 gap-12 items-start",
-
                     // Left Column: Headline, Description, Dual ISO CTAs
                     div { class: "lg:col-span-7 space-y-7 pt-2",
                         div { class: "inline-flex items-center gap-2.5 px-3 py-1 rounded-full bg-[#040D14] border border-cyan-500/40 text-xs font-mono text-cyan-300 tracking-wide",
@@ -93,18 +90,17 @@ fn App() -> Element {
                                 class: "px-6 py-4 rounded-xl bg-gradient-to-r from-teal-500 to-cyan-500 text-black hover:brightness-110 transition-all kestrel-glow flex items-center justify-center gap-3.5",
                                 href: "https://github.com/Kestrel-Arch/Kestrel-Installer/releases/tag/latest-iso",
                                 target: "_blank",
-                                span { class: "text-xl font-bold", "↓" }
+                                span { class: "text-xl font-bold", "⬇" }
                                 div { class: "text-left",
                                     div { class: "text-sm font-extrabold leading-tight", "Download Offline ISO" }
                                     div { class: "text-[11px] font-mono font-semibold opacity-80", "Air-Gapped • Hyprland / Plasma 6 / XFCE" }
                                 }
                             }
-
                             a {
                                 class: "px-6 py-4 rounded-xl bg-[#040D14] border border-cyan-500/40 hover:border-cyan-400 hover:bg-cyan-950/30 text-gray-100 transition-all flex items-center justify-center gap-3.5",
                                 href: "https://github.com/Kestrel-Arch/Kestrel-Installer/releases/tag/latest-online-iso",
                                 target: "_blank",
-                                span { class: "text-xl font-bold text-cyan-400", "↓" }
+                                span { class: "text-xl font-bold text-cyan-400", "🌐" }
                                 div { class: "text-left",
                                     div { class: "text-sm font-bold leading-tight text-white", "Download Online ISO" }
                                     div { class: "text-[11px] font-mono text-gray-400", "Net-Installer • All 17 Desktops & 5 Browsers" }
@@ -280,7 +276,6 @@ fn App() -> Element {
                             div { class: "text-xs font-mono text-cyan-400 uppercase tracking-widest", "WORKSPACES" }
                             h2 { class: "text-3xl font-bold text-white", "17 Desktop Environments & Window Managers" }
                         }
-
                         // Filter Buttons
                         div { class: "flex items-center gap-2 bg-[#040D14] p-1 rounded-xl border border-slate-800 text-xs font-mono",
                             button {
@@ -351,7 +346,7 @@ fn App() -> Element {
             footer { class: "border-t border-slate-900 bg-[#020617] py-10 px-6 relative z-10",
                 div { class: "max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-gray-500",
                     div { class: "flex items-center gap-3",
-                        img { class: "w-5 h-5 object-contain opacity-80", src: "logo.png" }
+                        img { class: "w-5 h-5 object-contain opacity-80", src: "logo.svg", alt: "Kestrel Arch Logo" }
                         span { class: "font-bold text-gray-300", "Kestrel Arch Deployment Engine" }
                         span { "•" }
                         span { "Licensed under AGPLv3" }
@@ -404,7 +399,7 @@ fn App() -> Element {
                             }
                             div { class: "p-3 rounded-lg bg-slate-950 border border-slate-800",
                                 span { class: "text-cyan-400 font-bold", "Backend Engines: " }
-                                "install.sh & kestrel-repair.sh (Non-Interactive IPC)"
+                                "Native Rust (engine.rs & kestrel-doctor) with TransactionalGuard"
                             }
                             div { class: "p-3 rounded-lg bg-slate-950 border border-slate-800",
                                 span { class: "text-cyan-400 font-bold", "Compression & Repo: " }
