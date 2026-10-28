@@ -21,7 +21,7 @@ sysinfo = "0.31"
 regex = "1.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-nix = { version = "0.29", features = ["mount", "fs", "process", "user", "sched"] }
+nix = { version = "0.31", features = ["mount", "fs", "process", "user", "sched"] }
 
 [build-dependencies]
 slint-build = "1.7.2"
