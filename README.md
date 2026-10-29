@@ -38,7 +38,7 @@
 > **Already booted into a vanilla Arch Linux Live USB?**  
 > Launch the Kestrel graphical provisioning engine directly from memory with a single command:
 > ```bash
-> bash <(curl -sL [https://kestrel.s.gy/eadxm](https://kestrel.s.gy/eadxm))
+> bash <(curl -sL https://kestrel.s.gy/eadxm)
 > ```
 
 ### Pre-Built Live ISOs (Hugging Face Global CDN)
