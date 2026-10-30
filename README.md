@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="airootfs/gui-src/ui/logo.svg" alt="Kestrel Arch Logo" width="140" height="140" />
+<img src="https://github.com/Kestrel-Arch/Kestrel-Installer/blob/main/airootfs/gui-src/ui/logo.svg?raw=true" alt="Kestrel Arch Logo" width="140" height="140" />
 
 # KESTREL ARCH
 ### Automated, Hardware-Aware Arch Linux Provisioning & Self-Healing Rescue Engine
@@ -13,12 +13,12 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
 
 <p align="center">
-  <a href="#-quick-start--deployment"><b>Quick Start</b></a> •
-  <a href="#-why-kestrel-arch"><b>Why Kestrel?</b></a> •
-  <a href="#-core-engineering"><b>Architecture</b></a> •
-  <a href="#-the-workspace--software-matrix"><b>17+ Workspaces</b></a> •
-  <a href="#-in-place-recovery--self-healing-guard"><b>Self-Healing</b></a> •
-  <a href="#️-local-development"><b>Build from Source</b></a>
+  <a href="#-quick-start--deployment"><img src="https://api.iconify.design/lucide/zap.svg?color=%2306b6d4" width="16" height="16" align="absmiddle" /> <b>Quick Start</b></a> &nbsp;&bull;&nbsp;
+  <a href="#-why-kestrel-arch"><img src="https://api.iconify.design/lucide/flame.svg?color=%2306b6d4" width="16" height="16" align="absmiddle" /> <b>Why Kestrel?</b></a> &nbsp;&bull;&nbsp;
+  <a href="#-core-engineering"><img src="https://api.iconify.design/lucide/cpu.svg?color=%2306b6d4" width="16" height="16" align="absmiddle" /> <b>Architecture</b></a> &nbsp;&bull;&nbsp;
+  <a href="#-the-workspace--software-matrix"><img src="https://api.iconify.design/lucide/package.svg?color=%2306b6d4" width="16" height="16" align="absmiddle" /> <b>17+ Workspaces</b></a> &nbsp;&bull;&nbsp;
+  <a href="#-in-place-recovery--self-healing-guard"><img src="https://api.iconify.design/lucide/activity.svg?color=%2306b6d4" width="16" height="16" align="absmiddle" /> <b>Self-Healing</b></a> &nbsp;&bull;&nbsp;
+  <a href="#-local-development"><img src="https://api.iconify.design/lucide/hammer.svg?color=%2306b6d4" width="16" height="16" align="absmiddle" /> <b>Build from Source</b></a>
 </p>
 
 ---
@@ -32,7 +32,7 @@
 
 ---
 
-## ⚡ Quick Start & Deployment
+## <img src="https://api.iconify.design/lucide/zap.svg?color=%2306b6d4" width="24" height="24" align="absmiddle" /> Quick Start & Deployment
 
 > [!TIP]
 > **Already booted into a vanilla Arch Linux Live USB?**  
@@ -56,7 +56,7 @@ sudo dd if=Kestrel-Arch-offline.iso of=/dev/sdX bs=4M status=progress oflag=sync
 
 ---
 
-## 🔥 Why Kestrel Arch?
+## <img src="https://api.iconify.design/lucide/flame.svg?color=%2306b6d4" width="24" height="24" align="absmiddle" /> Why Kestrel Arch?
 
 Most Linux installers are either fragile linear bash scripts that leave your disks half-mounted on network failure, or bloated Python/Qt frameworks that consume gigabytes of RAM in the live environment. Kestrel treats OS provisioning as a **systems programming problem**.
 
@@ -72,7 +72,7 @@ Most Linux installers are either fragile linear bash scripts that leave your dis
 
 ---
 
-## 🧠 Core Engineering
+## <img src="https://api.iconify.design/lucide/cpu.svg?color=%2306b6d4" width="24" height="24" align="absmiddle" /> Core Engineering
 
 ### 1. RAII Transactional Rollback (`TransactionalGuard`)
 Kestrel implements Rust's `Drop` trait across all block and virtual filesystem operations. If a deployment faults at any stage—whether from a mirror timeout, corrupted package signature, or user cancellation—`TransactionalGuard` automatically unwinds the state machine:
@@ -96,7 +96,7 @@ Without spawning external shell utilities, Kestrel queries CPU instruction set e
 
 ---
 
-## 🏗️ System Architecture & State Machine
+## <img src="https://api.iconify.design/lucide/network.svg?color=%2306b6d4" width="24" height="24" align="absmiddle" /> System Architecture & State Machine
 
 ```mermaid
 graph TD
@@ -119,7 +119,7 @@ graph TD
 ```
 
 <details>
-<summary><b>📂 View Repository Directory Structure</b></summary>
+<summary><img src="https://api.iconify.design/lucide/folder-tree.svg?color=%2314b8a6" width="16" height="16" align="absmiddle" /> <b>View Repository Directory Structure</b></summary>
 
 ```text
 Kestrel-Installer/
@@ -130,11 +130,13 @@ Kestrel-Installer/
 │       ├── build.rs            # Slint UI compiler build script
 │       ├── src/
 │       │   ├── main.rs         # Slint UI controller & mpsc telemetry channels
-│       │   └── engine.rs       # Native Rust provisioning & recovery backend
+│       │   ├── engine.rs       # Native Rust provisioning & recovery backend
+│       │   └── bin/
+│       │       └── kestrel-doctor.rs # Standalone zero-dependency ALPM boot integrity binary
 │       └── ui/
 │           ├── installer.slint # Declarative Slint interface & styling
 │           ├── fonts/          # Embedded typography (Geomini, Cascadia Code)
-│           └── logo.svg        # Vector brand assets
+│           └── logo.png        # Brand assets
 ├── web/                        # Dioxus / WebAssembly landing page source
 ├── bootstrap.sh                # Universal Live ISO bootstrapper
 ├── packages.x86_64             # Base live-environment package manifest
@@ -144,11 +146,11 @@ Kestrel-Installer/
 
 ---
 
-## 📦 The Workspace & Software Matrix
+## <img src="https://api.iconify.design/lucide/package.svg?color=%2306b6d4" width="24" height="24" align="absmiddle" /> The Workspace & Software Matrix
 
 Kestrel deploys **17 pre-configured desktop environments and window managers** with isolated `xdg-desktop-portal` backends, paired with your choice of bootloader and privacy-tuned browser.
 
-### 🖥️ Supported Workspaces (17 Environments)
+### <img src="https://api.iconify.design/lucide/monitor.svg?color=%2314b8a6" width="20" height="20" align="absmiddle" /> Supported Workspaces (17 Environments)
 
 | Category | Environment | Stack & Configuration Highlights |
 | :--- | :--- | :--- |
@@ -164,7 +166,7 @@ Kestrel deploys **17 pre-configured desktop environments and window managers** w
 | | **i3-wm / bspwm / Qtile** | Minimalist manual and binary-space tiling window managers for keyboard purists. |
 | | **LXQt / LXDE / Openbox** | Featherweight Qt6 and X11 stacking environments for legacy or low-RAM hardware. |
 
-### 🚀 Boot Managers & Web Browsers
+### <img src="https://api.iconify.design/lucide/disc.svg?color=%2314b8a6" width="20" height="20" align="absmiddle" /> Boot Managers & Web Browsers
 
 | Component | Options Available | Highlights |
 | :--- | :--- | :--- |
@@ -173,7 +175,7 @@ Kestrel deploys **17 pre-configured desktop environments and window managers** w
 
 ---
 
-## 🚑 In-Place Recovery & Self-Healing Guard
+## <img src="https://api.iconify.design/lucide/activity.svg?color=%2306b6d4" width="24" height="24" align="absmiddle" /> In-Place Recovery & Self-Healing Guard
 
 Kestrel doesn't disappear after first boot—it actively protects your rolling-release installation against interrupted updates.
 
@@ -192,7 +194,7 @@ If an external factor breaks your bootloader or kernel:
 
 ---
 
-## 🖥️ System Requirements
+## <img src="https://api.iconify.design/lucide/server.svg?color=%2306b6d4" width="24" height="24" align="absmiddle" /> System Requirements
 
 | Specification | Minimum | Recommended |
 | :--- | :--- | :--- |
@@ -204,7 +206,7 @@ If an external factor breaks your bootloader or kernel:
 
 ---
 
-## 🛠️ Local Development
+## <img src="https://api.iconify.design/lucide/hammer.svg?color=%2306b6d4" width="24" height="24" align="absmiddle" /> Local Development
 
 ### Prerequisites
 Ensure you have the stable Rust toolchain (`rustup default stable`) and required system libraries installed:
@@ -214,7 +216,7 @@ sudo pacman -S --needed base-devel cmake pkgconf fontconfig freetype2 libx11 lib
 
 ### Compiling & Running the Installer GUI
 ```bash
-git clone [https://github.com/Kestrel-Arch/Kestrel-Installer.git](https://github.com/Kestrel-Arch/Kestrel-Installer.git)
+git clone https://github.com/Kestrel-Arch/Kestrel-Installer.git
 cd Kestrel-Installer/airootfs/gui-src
 
 # Compile with release optimizations
@@ -226,7 +228,7 @@ cargo run --release
 
 ---
 
-## 📄 Licensing
+## <img src="https://api.iconify.design/lucide/scale.svg?color=%2306b6d4" width="24" height="24" align="absmiddle" /> Licensing
 
 Kestrel Arch is dual-licensed:
 
@@ -235,6 +237,6 @@ Kestrel Arch is dual-licensed:
 
 <div align="center">
   <br>
-  <b>Built with 🦀 Rust & Slint for the Arch Linux Community</b><br>
-  <sub>If Kestrel saved you time or rescued your system, consider dropping a ⭐ on the repo!</sub>
+  <img src="https://api.iconify.design/simple-icons/rust.svg?color=%23dea584" width="16" height="16" align="absmiddle" /> <b>Built with Rust &amp; Slint for the Arch Linux Community</b><br>
+  <sub>If Kestrel saved you time or rescued your system, consider dropping a <img src="https://api.iconify.design/lucide/star.svg?color=%23f59e0b" width="13" height="13" align="absmiddle" /> on the repo!</sub>
 </div>
